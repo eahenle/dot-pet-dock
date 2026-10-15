@@ -1,0 +1,10 @@
+# Python smoke-test artifacts
+__pycache__/
+.pytest_cache/
+*.py[cod]
+.venv/
+
+# Local OS and editor files
+.DS_Store
+.idea/
+.vscode/
