@@ -51,7 +51,7 @@ Manifest V3 extension** into temporary browser profiles. All fixture ChatGPT
 requests are fulfilled locally; no authenticated profile, cookie export,
 conversation content, or production pet assets are used.
 
-`python tests/smoke_browser.py` exercises 24 unpacked-extension browser cases
+`python tests/smoke_browser.py` exercises 28 unpacked-extension browser cases
 plus one controlled storage-latency case:
 
 - Automatic detection and manual SVG/container selection, parent promotion,
@@ -130,6 +130,36 @@ Automated fixtures cover SPA/remount recovery; a live navigation attempt was
 inconclusive and is not counted as production SPA evidence. Raster artwork
 remains limited by its native resolution. Closed Shadow DOM and renderers that
 pause outside their original layout context may need additional adapters.
+
+## v0.3 animation controls
+
+The runtime recognizes the existing standard eight-column atlases with nine
+(v1) or eleven (v2) rows. Both share animation rows 0–8: idle, running-right,
+running-left, waving, jumping, failed, waiting, running/work, and review. The
+frame counts and timing follow the installed Work Pets sprite contract.
+
+Playback uses a one-shot Web Animation on the original sprite's background
+position. It never copies artwork or overwrites the site's inline frame state.
+Finishing or canceling removes only the extension's effect and reveals the
+latest live frame. New clips replace previous clips. Reset, target removal,
+page hiding, and extension cleanup cancel playback. Unknown grids and important
+native frame-position declarations are rejected.
+
+Wave/Jump shortcuts appear on the editable dock. The popup provides all nine
+clips plus Play/Stop while locked or unlocked. Animation previews are transient
+and do not change or persist task/activity state. No new permissions are needed.
+
+Browser regressions exercise native frame progression, return to a state changed
+during playback, clip replacement, Stop/Reset cleanup, narrow-toolbar layout,
+locked-popup messaging, rejected clip IDs, v1 coordinates, and unsupported grids.
+A controlled delayed polling failure also verifies that an older transport error
+cannot disable Stop for a newer animation.
+
+Live playback of Wave, Jump, and Work on the production 8×11 sprite reached
+rows 3, 4, and 7, respectively, and advanced through their native frames. Stop
+removed the preview immediately; one-shot completion returned to native idle
+frames. The nametag remained 20 px high, overflow remained visible, and the
+saved 250% scale and locked state were unchanged.
 
 ## References
 

@@ -18,7 +18,8 @@ let state = {
   scale: 1,
   picking: false
 };
-let busy = { find: false, pick: false, lock: false, reset: false };
+let busy = { find: false, pick: false, lock: false, reset: false, animation: false };
+let animationPollTimer = 0;
 let messageEpoch = 0;
 let lastRequestedScale = null;
 
@@ -67,6 +68,8 @@ function normalizeState(value) {
     locked: !!raw.locked,
     scale: scaleValue(raw.scale),
     picking: !!raw.picking,
+    animationAvailable: !!raw.animationAvailable,
+    playing: Object.hasOwn(globalThis.DotPetDockAnimations.clips, raw.playing) ? raw.playing : null,
     error: raw.error ? String(raw.error) : '',
     notice: raw.notice ? String(raw.notice) : ''
   };
@@ -130,6 +133,33 @@ function renderControls() {
   lock.checked = state.locked;
   reset.disabled = !canMessage || !state.saved || busy.reset;
   reset.textContent = busy.reset ? 'Restoring…' : 'Restore original display';
+  renderAnimations();
+}
+
+function renderAnimations() {
+  const available = tabSupported && connected && state.selected && state.animationAvailable && !state.picking;
+  $('animation-clip').disabled = !available || busy.animation;
+  $('animation-play').disabled = !available || busy.animation;
+  $('animation-stop').disabled = !available || !state.playing || busy.animation;
+  const label = globalThis.DotPetDockAnimations.clips[state.playing]?.label;
+  $('animation-status').textContent = !available ? 'Select a supported pet to play animations.'
+    : label ? `Playing ${label}…` : 'Plays once, then returns to live activity.';
+  clearTimeout(animationPollTimer);
+  if (state.playing) {
+    animationPollTimer = setTimeout(async () => {
+      const epoch = messageEpoch;
+      try {
+        const response = await send('STATE');
+        if (epoch !== messageEpoch) return;
+        state.playing = response.playing;
+        state.animationAvailable = !!response.animationAvailable;
+        renderAnimations();
+      } catch (_) {
+        if (epoch !== messageEpoch) return;
+        state.playing = null; renderAnimations();
+      }
+    }, 150);
+  }
 }
 
 function draw(nextState = state) {
@@ -290,4 +320,18 @@ $('reset').addEventListener('click', async () => {
 });
 
 draw(state);
+for (const [id, clip] of Object.entries(globalThis.DotPetDockAnimations.clips)) {
+  const option = document.createElement('option');
+  option.value = id; option.textContent = clip.label;
+  $('animation-clip').append(option);
+}
+$('animation-clip').value = 'waving';
+for (const [id, action] of [['animation-play', 'ANIMATE'], ['animation-stop', 'STOP_ANIMATION']]) {
+  $(id).addEventListener('click', async () => {
+    busy.animation = true; renderControls();
+    await request(action, { clip: $('animation-clip').value });
+    busy.animation = false; renderControls();
+  });
+}
+
 void init();
