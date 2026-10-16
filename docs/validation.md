@@ -167,3 +167,13 @@ saved 250% scale and locked state were unchanged.
 - [Using the Popover API](https://developer.mozilla.org/en-US/docs/Web/API/Popover_API/Using)
 - [Chrome extension end-to-end testing](https://developer.chrome.com/docs/extensions/how-to/test/end-to-end-testing)
 - [Navigation success events](https://developer.mozilla.org/en-US/docs/Web/API/Navigation/navigatesuccess_event)
+
+## Numeric display size
+
+The popup uses a numeric percentage field with a percent suffix and native 1%
+keyboard increments. Valid whole percentages apply immediately. Incomplete or
+out-of-range drafts stay editable without changing the pet; Enter or leaving
+the field rounds and clamps to 50–500%. An empty or invalid draft restores the
+last applied percentage. Focused drafts survive asynchronous replies and redraws.
+Browser coverage includes multi-digit typing, keyboard stepping, empty entries,
+range clamping, rapid updates, and closing the popup before delayed replies.

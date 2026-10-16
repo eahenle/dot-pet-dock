@@ -125,9 +125,9 @@ function renderControls() {
   pick.textContent = busy.pick ? 'Opening picker…' : 'Pick pet on page';
 
   scale.disabled = !canMessage || !state.selected;
-  scale.value = String(percent);
-  scale.setAttribute('aria-valuenow', String(percent));
-  $('scale-output').value = `${percent}%`;
+  // Keep an in-progress draft intact when a prior request replies or another
+  // control redraws the popup. Commit/blur normalizes the field explicitly.
+  if (document.activeElement !== scale) scale.value = String(percent);
 
   lock.disabled = !canMessage || !state.selected || busy.lock;
   lock.checked = state.locked;
@@ -259,7 +259,7 @@ function sendScale(nextScale) {
   lastRequestedScale = nextScale;
   const requestEpoch = ++messageEpoch;
   // `send` calls chrome.tabs.sendMessage before its first await, so every
-  // slider input is dispatched immediately. The epoch prevents an older
+  // valid size input is dispatched immediately. The epoch prevents an older
   // response or error from replacing the latest optimistic value.
   const pending = send('SET_SCALE', { scale: nextScale });
   void pending.then((response) => {
@@ -274,25 +274,30 @@ function sendScale(nextScale) {
   });
 }
 
-function readScaleInput(event) {
-  const percent = clamp(Math.round(Number(event.target.value)), MIN_SCALE_PERCENT, MAX_SCALE_PERCENT);
-  event.target.value = String(percent);
-  return percent / 100;
-}
-
-$('scale').addEventListener('input', (event) => {
-  const nextScale = readScaleInput(event);
-  state = { ...state, scale: nextScale, error: '', notice: '' };
-  draw(state);
-  sendScale(nextScale);
-});
-
-$('scale').addEventListener('change', (event) => {
-  const nextScale = readScaleInput(event);
+function applyScaleInput(commit = false) {
+  const field = $('scale');
+  const value = field.valueAsNumber;
+  if (!Number.isFinite(value)) {
+    if (commit) field.value = String(Math.round(state.scale * 100));
+    return;
+  }
+  if (!commit && (!Number.isInteger(value) || value < MIN_SCALE_PERCENT || value > MAX_SCALE_PERCENT)) return;
+  const percent = clamp(Math.round(value), MIN_SCALE_PERCENT, MAX_SCALE_PERCENT);
+  if (commit) field.value = String(percent);
+  const nextScale = percent / 100;
   if (nextScale === lastRequestedScale) return;
   state = { ...state, scale: nextScale, error: '', notice: '' };
   draw(state);
   sendScale(nextScale);
+}
+
+$('scale').addEventListener('input', () => applyScaleInput());
+$('scale').addEventListener('change', () => applyScaleInput(true));
+$('scale').addEventListener('blur', () => applyScaleInput(true));
+$('scale').addEventListener('keydown', event => {
+  if (event.key === 'Enter') {
+    event.preventDefault(); applyScaleInput(true);
+  }
 });
 
 $('lock').addEventListener('change', async (event) => {

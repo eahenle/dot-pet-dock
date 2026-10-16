@@ -34,10 +34,10 @@ section {
   border: 1px solid #362c43; border-radius: 10px; background: #211b2d;
 }
 .line { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
-output { font-variant-numeric: tabular-nums; font-weight: 700; color: #d7c7ff; }
-input[type=range] { display: block; width: 100%; accent-color: #ac8ff2; margin: 0; cursor: pointer; }
-input[type=range]:disabled { cursor: not-allowed; }
-.range-labels { display: flex; justify-content: space-between; margin-top: 2px; color: #8f84a1; font-size: 10px; }
+.scale-input { display: inline-flex; align-items: center; gap: 4px; padding-right: 8px; border: 1px solid #60546d; border-radius: 7px; background: #191523; color: #d7c7ff; }
+input[type=number] { width: 80px; padding: 6px 4px 6px 8px; border: 0; border-radius: 7px; background: transparent; color: inherit; font: inherit; font-weight: 700; font-variant-numeric: tabular-nums; text-align: right; }
+input[type=number]:disabled { opacity: .45; cursor: not-allowed; }
+.scale-limits { color: #8f84a1; font-size: 10px; text-align: right; }
 .check { display: flex; align-items: center; gap: 8px; margin-top: 13px; color: #dfd5e9; cursor: pointer; }
 .check input { width: 16px; height: 16px; margin: 0; accent-color: #9074d7; }
 .animation-controls { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin-top: 7px; }

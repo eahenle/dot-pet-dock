@@ -35,7 +35,7 @@ check it out before loading the folder.
 2. Check the outlined frame. Use **↑ Parent** if only part of the pet moved.
    Broad conversation, sidebar, and editor containers are rejected. **Esc**
    cancels selection.
-3. Adjust the popup's size slider, or drag the purple corner. Drag **✥ Move** to
+3. Enter a percentage in the popup's size field, or drag the purple corner. Drag **✥ Move** to
    reposition. Controls stay within reach at viewport edges.
 4. Check **Lock in place** in the popup, or click **Lock** on the page. The pet
    remains visible and keeps its native pointer interactions. Uncheck **Lock**
@@ -58,7 +58,7 @@ pet is absent, settings wait for it to return; Reset remains available.
 
 Keyboard: **Alt + Shift + P** toggles selection. Focus **Move** and use arrow
 keys to move 10 pixels. Focus the resize corner and use arrows to adjust size
-10%. The popup slider supports 1% increments.
+10%. The popup number field supports 1% increments from 50–500%.
 
 ![Extension controls around a pet enlarged to 300% in the automated fixture](docs/images/fixture-dock.png)
 
