@@ -318,11 +318,15 @@
     targetObserver.disconnect();
     const set = (property, value) => lease.set(property, value);
     set('--dot-pet-dock-owned', '1');
+    set('--dot-pet-dock-scale', saved.scale);
     set('position', 'fixed');
     set('right', 'auto'); set('bottom', 'auto');
     set('margin-top', '0px'); set('margin-right', '0px');
     set('margin-bottom', '0px'); set('margin-left', '0px');
-    set('width', natural.width); set('height', natural.height);
+    set('width', natural.width);
+    set('height', natural.nametagHeight
+      ? `${parseFloat(natural.height) - natural.nametagHeight + natural.nametagHeight / saved.scale}px`
+      : natural.height);
     set('min-width', '0px'); set('min-height', '0px');
     set('max-width', 'none'); set('max-height', 'none');
     set('box-sizing', natural.boxSizing);
@@ -360,12 +364,17 @@
     const requestedPosition = { x: config.x, y: config.y };
     const cs = getComputedStyle(element);
     const appearance = {};
-    for (const property of ['background-color', 'color', 'padding-top', 'padding-right', 'padding-bottom', 'padding-left',
+    for (const property of ['background-color', 'color', 'overflow-x', 'overflow-y',
+      'padding-top', 'padding-right', 'padding-bottom', 'padding-left',
       ...['top', 'right', 'bottom', 'left'].flatMap(side => [`border-${side}-width`, `border-${side}-style`, `border-${side}-color`])]) {
       appearance[property] = cs.getPropertyValue(property);
     }
+    const nametagSelector = ':scope > div.pointer-events-none > div.relative.isolate';
+    const nametag = targeting.dotsAvatar(element) ? element.querySelector(nametagSelector) : null;
+    const originalNametagHeight = nametag?.getBoundingClientRect().height || 0;
     const base = { width: cs.width, height: cs.height, display: cs.display, boxSizing: cs.boxSizing,
-      zoom: parseFloat(cs.zoom) || 1, appearance };
+      zoom: parseFloat(cs.zoom) || 1, appearance,
+      nametagHeight: originalNametagHeight * parseFloat(cs.height) / originalRect.height };
     // Low-specificity author defaults neutralize the popover UA appearance.
     // Native classes/inline styles continue to win, including later theme or
     // animation state changes. Never freeze live appearance with !important.
@@ -375,7 +384,11 @@
       ${Object.entries(appearance).filter(([property]) => property !== 'color').map(([property, value]) => `${property}:${value};`).join('')}
       color:inherit; display:${base.display};
     }
-    [data-dot-pet-dock-target]::backdrop { background:transparent !important; pointer-events:none !important; }`);
+    [data-dot-pet-dock-target]::backdrop { background:transparent !important; pointer-events:none !important; }
+    ${nametag ? `:where([data-dot-pet-dock-target] > div.pointer-events-none > div.relative.isolate) {
+      zoom:calc(1 / var(--dot-pet-dock-scale, 1));
+      width:max-content; max-width:${base.width} !important; flex-shrink:0;
+    }` : ''}`);
     presentationRoot.adoptedStyleSheets = [...presentationRoot.adoptedStyleSheets, presentationSheet];
     if (!['fixed', 'absolute'].includes(cs.position)) {
       // Reserve the original flow slot without moving or cloning the pet.
@@ -404,8 +417,9 @@
     placeTarget();
     if (target) {
       const promoted = target.getBoundingClientRect();
+      const desiredHeight = (originalRect.height - originalNametagHeight) * saved.scale + originalNametagHeight;
       const correction = Math.min(originalRect.width * saved.scale / promoted.width,
-        originalRect.height * saved.scale / promoted.height);
+        desiredHeight / promoted.height);
       if (Number.isFinite(correction) && correction > 0 && Math.abs(correction - 1) > .001) {
         natural.zoom *= correction;
         saved.x = requestedPosition.x; saved.y = requestedPosition.y;

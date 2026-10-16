@@ -142,6 +142,43 @@ def fixture_html(scene: str) -> str:
     elif scene == "safety":
         pet = '<div id="bad-ui"><svg id="bad-art" viewBox="0 0 100 100" aria-label="decorative icon"><circle cx="50" cy="50" r="44" fill="#c34d4d"/></svg><button id="delete-conversation" type="button">Delete conversation</button></div>'
         controls = ""
+    elif scene in {"sprite", "sprite-unsafe", "sprite-unmarked"}:
+        # Sanitized production structure: CSS artwork plus a sibling overlay
+        # button. No production asset, account name, or conversation is copied.
+        classes = "group/avatar group/orbit-profile" if scene != "sprite-unmarked" else "ordinary-avatar"
+        extra = '<button type="button">Delete conversation</button>' if scene == "sprite-unsafe" else ""
+        pet = f"""
+          <style>
+            #pet {{ position:relative; width:56px; height:82px; }}
+            #pet > button {{ position:absolute; inset:0; border:0; background:transparent; padding:0; }}
+            #sprite-visual {{ pointer-events:none; display:flex; flex-direction:column; align-items:center; width:56px; }}
+            #sprite-body {{ position:relative; width:56px; height:56px; margin-bottom:-2px; }}
+            #sprite-body > svg {{ position:absolute; top:0; right:0; }}
+            #sprite-name {{ position:relative; isolation:isolate; display:flex; max-width:100%; min-width:0; justify-content:center; }}
+            #sprite-name > div {{ display:flex; max-width:100%; min-width:0; font-size:16px; line-height:20px; padding:4px 10px; }}
+            #sprite-name-text {{ display:block; max-width:100%; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }}
+            #sprite-art {{ width:56px; height:56px;
+              background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='112' height='56'%3E%3Ccircle cx='28' cy='28' r='24' fill='%23774bbb'/%3E%3Ccircle cx='84' cy='28' r='24' fill='%23bb774b'/%3E%3C/svg%3E");
+              animation: sprite-frames 400ms steps(1) infinite; }}
+            @keyframes sprite-frames {{ 0% {{ background-position:0 0; }} 50% {{ background-position:-56px 0; }} }}
+          </style>
+          <div id="pet" class="{classes}">
+            <button id="sprite-overlay" class="absolute inset-0 touch-none" type="button" aria-label="Open fixture profile"></button>
+            <div id="sprite-visual" class="pointer-events-none"><div id="sprite-body"><span><div id="sprite-art"></div></span><svg width="12" height="12"><circle r="4" cx="6" cy="6"/></svg></div><div id="sprite-name" class="relative isolate"><div><span id="sprite-name-text">Dot</span></div></div></div>
+            {extra}
+          </div>
+        """
+        controls = """
+          <output id="sprite-clicks">0</output>
+          <script>
+            window.addEventListener('DOMContentLoaded', () => {
+              document.querySelector('#sprite-overlay').onclick = () => {
+                const counter = document.querySelector('#sprite-clicks');
+                counter.textContent = String(Number(counter.textContent) + 1);
+              };
+            });
+          </script>
+        """
     elif scene == "button-pet":
         pet = '<button id="pet" class="pet-visual button-pet" data-testid="dot-pet" type="button">' + svg_art() + "</button>"
         controls = """
@@ -370,6 +407,126 @@ def test_auto_detect_and_svg_parent(playwright: Any) -> None:
         assert selected.get_attribute("id") == "pet", "semantic SVG pet should resolve to its HTML visual parent"
         assert selected.evaluate("el => el.tagName.toLowerCase()") == "div"
         assert page.locator("#pet-art").count() == 1
+
+
+def test_production_css_sprite_keeps_overlay_and_recovers(playwright: Any) -> None:
+    """Catch rejecting CSS-only artwork or leaving its native button behind."""
+    with harness(playwright, "sprite") as h:
+        page = h.open("/dots/home")
+        selected = wait_for_target(page)
+        assert selected.get_attribute("id") == "pet"
+        assert selected.evaluate("e => e.contains(document.querySelector('#sprite-overlay'))")
+        page.locator("#sprite-overlay").click()
+        assert page.locator("#sprite-clicks").text_content() == "1"
+        root(page).locator("#reset").click()
+        wait_for_target(page, 0)
+        assert page.locator("#pet").get_attribute("style") is None
+        selected = select_at(page, "#sprite-overlay")
+        set_scale_with_keyboard(page, "ArrowUp", 20)
+        assert_near(selected.bounding_box()["width"], 168, 1)
+        assert_near(page.locator("#sprite-art").bounding_box()["width"], 168, 1)
+        move = root(page).locator("#move")
+        before = selected.bounding_box()
+        move.focus()
+        page.keyboard.press("ArrowRight")
+        assert_near(selected.bounding_box()["x"], before["x"] + 10, 1)
+        positions = set()
+        for _ in range(8):
+            positions.add(page.locator("#sprite-art").evaluate("e => getComputedStyle(e).backgroundPosition"))
+            page.wait_for_timeout(80)
+        assert len(positions) > 1, "native sprite animation must continue while docked"
+        root(page).locator("#lock").click()
+        page.locator("#sprite-overlay").click()
+        assert page.locator("#sprite-clicks").text_content() == "2"
+        page.reload(wait_until="domcontentloaded")
+        selected = wait_for_target(page)
+        assert_near(selected.bounding_box()["width"], 168, 1)
+        assert selected.evaluate("e => e.matches(':popover-open')")
+        # Use the actual popup's extension API to reset a locked display.
+        popup = h.context.new_page()
+        popup.goto(f"chrome-extension://{unpacked_extension_id()}/popup.html")
+        popup.evaluate("""async () => {
+          const tabs = await chrome.tabs.query({});
+          const current = await chrome.tabs.getCurrent();
+          // This isolated profile has the fixture immediately before popup.
+          // Without a toolbar activation activeTab does not expose URLs.
+          const tab = tabs.filter(t => t.id !== current.id).at(-1);
+          await chrome.tabs.sendMessage(tab.id, {namespace:'DOT_PET_DOCK',action:'RESET'});
+        }""")
+        popup.close()
+        wait_for_target(page, 0)
+        assert page.locator("#pet").get_attribute("style") is None
+        page.locator("#sprite-overlay").click()
+        assert page.locator("#sprite-clicks").text_content() == "1"
+        assert not h.errors, h.errors
+
+
+def test_docked_sprite_does_not_add_scrollbars(playwright: Any) -> None:
+    """Popover UA overflow must not turn enlarged artwork into a scroll area."""
+    with harness(playwright, "sprite") as h:
+        page = h.open()
+        selected = wait_for_target(page)
+        set_scale_with_keyboard(page, "ArrowUp", 40)
+        assert selected.evaluate("e => getComputedStyle(e).overflowX") == "visible"
+        assert selected.evaluate("e => getComputedStyle(e).overflowY") == "visible"
+
+
+def test_sprite_nametag_keeps_native_size(playwright: Any) -> None:
+    """Enlarging the artwork must leave its nametag at the original size."""
+    with harness(playwright, "sprite") as h:
+        page = h.open()
+        selected = wait_for_target(page)
+        baseline = page.locator("#sprite-name-text").bounding_box()
+        for scale, presses in ((3, 20), (5, 20), (.5, 45)):
+            set_scale_with_keyboard(page, "ArrowUp" if scale > 1 else "ArrowDown", presses)
+            label = page.locator("#sprite-name-text").bounding_box()
+            assert_near(label["width"], baseline["width"], 1)
+            assert_near(label["height"], baseline["height"], 1)
+            assert_near(selected.bounding_box()["height"], 54 * scale + 28, 1)
+        root(page).locator("#reset").click()
+        assert page.locator("#sprite-name").get_attribute("style") is None
+        assert_near(page.locator("#pet").bounding_box()["height"], 82, 1)
+
+
+def test_css_sprite_adapter_rejects_other_controls(playwright: Any) -> None:
+    """An extra control or an ordinary CSS avatar must not become a pet."""
+    for scene in ("sprite-unsafe", "sprite-unmarked"):
+        with harness(playwright, scene) as h:
+            page = h.open()
+            page.wait_for_timeout(200)
+            wait_for_target(page, 0)
+            start_picker(page)
+            page.mouse.click(*centre(page.locator("#sprite-overlay").bounding_box()))
+            wait_for_target(page, 0)
+            page.keyboard.press("Escape")
+            assert not h.errors, h.errors
+
+
+def test_css_sprite_late_mount_and_remount(playwright: Any) -> None:
+    """A delayed native avatar must attach and recover cloned dock styles."""
+    with harness(playwright, "absence") as h:
+        page = h.open()
+        wait_for_target(page, 0)
+        page.evaluate("""html => {
+          const doc = new DOMParser().parseFromString(html, 'text/html');
+          for (const style of doc.querySelectorAll('style')) document.head.append(style);
+          document.querySelector('.pet-zone').append(doc.getElementById('pet'));
+        }""", fixture_html("sprite"))
+        selected = wait_for_target(page)
+        set_scale_with_keyboard(page, "ArrowDown", 5)
+        assert_near(selected.bounding_box()["width"], 28, 1)
+        page.evaluate("""() => {
+          const old = document.querySelector('#pet');
+          old.replaceWith(old.cloneNode(true));
+        }""")
+        page.wait_for_function("() => document.querySelector('#pet').matches(':popover-open')")
+        selected = wait_for_target(page)
+        assert_near(selected.bounding_box()["width"], 28, 1)
+        assert_near(selected.bounding_box()["height"], 55, 1)
+        assert_near(page.locator("#sprite-name-text").bounding_box()["height"], 19, 1)
+        root(page).locator("#reset").click()
+        assert page.locator("#pet").get_attribute("style") is None
+        assert not h.errors, h.errors
 
 
 def test_interactive_marked_button_pet_auto_manual_and_reset(playwright: Any) -> None:
@@ -972,6 +1129,11 @@ def test_popup_scale_survives_close_with_delayed_replies(playwright: Any) -> Non
 
 TESTS: dict[str, Callable[[Any], None]] = {
     "auto": test_auto_detect_and_svg_parent,
+    "sprite": test_production_css_sprite_keeps_overlay_and_recovers,
+    "sprite-safety": test_css_sprite_adapter_rejects_other_controls,
+    "sprite-overflow": test_docked_sprite_does_not_add_scrollbars,
+    "sprite-nametag": test_sprite_nametag_keeps_native_size,
+    "sprite-remount": test_css_sprite_late_mount_and_remount,
     "button-pet": test_interactive_marked_button_pet_auto_manual_and_reset,
     "clipped": test_manual_select_drag_resize_and_clipped_transform,
     "layout": test_in_flow_layout_slot_does_not_shift_following_content,

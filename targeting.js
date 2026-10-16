@@ -1,10 +1,13 @@
-/* Visual-only target identification. Never reads page text or asset URLs. */
+/* Visual-only target identification. Never reads page text or stores asset URLs. */
 (() => {
   'use strict';
   const MEDIA = 'svg,canvas,img,video,iframe';
   // These are conservative hints, not a claim about ChatGPT's private DOM.
   const HINTS = '[data-testid="dot-pet"],[data-testid="dot-pet-container"],'
     + '[aria-label="Dot pet"],[aria-label="ChatGPT pet"]';
+  // Observed in the production Dots header. The same sprite also appears in
+  // navigation icons, so recognize the whole avatar and its native overlay.
+  const DOTS_AVATAR = 'div[class~="group/avatar"][class~="group/orbit-profile"]';
   const FORBIDDEN = 'main,aside,nav,header,footer,article,form,dialog,p,h1,h2,h3,h4,ul,ol,pre,code,'
     + 'button,a,select,option,label,[role="button"],[role="link"],[role="menu"],[role="menuitem"],'
     + '[role="main"],[role="navigation"],[role="log"],[role="dialog"],'
@@ -12,12 +15,26 @@
     + '[contenteditable]:not([contenteditable="false"]),textarea,input,'
     + '[data-message-author-role],[data-testid^="conversation-turn"]';
 
+  function dotsAvatar(element) {
+    if (!(element instanceof HTMLElement) || !element.matches(DOTS_AVATAR)) return false;
+    const controls = element.querySelectorAll(FORBIDDEN);
+    if (controls.length !== 1) return false;
+    const overlay = controls[0];
+    if (overlay.parentElement !== element ||
+        !overlay.matches('button.absolute.inset-0.touch-none')) return false;
+    // Keep only the renderer kind; never retain its artwork URL.
+    const sprites = [...element.querySelectorAll('div')].filter(node =>
+      !node.childElementCount && getComputedStyle(node).backgroundImage.startsWith('url('));
+    return sprites.length === 1;
+  }
+
   function media(element) {
     const tags = element.matches(MEDIA) ? [element.localName] : [];
     for (const child of element.querySelectorAll(MEDIA)) {
       // SVG descendants cannot accidentally turn one drawing into many targets.
       if (!child.parentElement?.closest('svg')) tags.push(child.localName);
     }
+    if (dotsAvatar(element)) tags.push('css-sprite');
     return tags.sort();
   }
 
@@ -29,7 +46,8 @@
     if (!(element instanceof HTMLElement) || !element.isConnected ||
         element === document.body || element === document.documentElement ||
         element.id === 'dot-pet-dock-root' || element.closest('#dot-pet-dock-root') ||
-        (element.matches(FORBIDDEN) && !interactivePet) || element.querySelector(FORBIDDEN) ||
+        (element.matches(FORBIDDEN) && !interactivePet) ||
+        (element.querySelector(FORBIDDEN) && !dotsAvatar(element)) ||
         element.hasAttribute('popover') || element.closest('[data-message-author-role],[data-testid^="conversation-turn"]')) return false;
     const visuals = media(element);
     if (!visuals.length || visuals.length > 8) return false;
@@ -48,6 +66,8 @@
     // Prefer an explicit pet frame, but do not infer a pet from arbitrary UI.
     const hint = element?.closest(HINTS);
     if (hint && safe(hint)) return hint;
+    const avatar = element.closest(DOTS_AVATAR);
+    if (avatar && safe(avatar)) return avatar;
     for (let current = element, hops = 0; current && hops < 5; current = current.parentElement, hops++) {
       if (safe(current)) return current;
       if (current.matches(FORBIDDEN)) break;
@@ -120,7 +140,7 @@
   function automatic(searchRoots = roots()) {
     const candidates = [];
     for (const root of searchRoots) {
-      for (const element of root.querySelectorAll(HINTS)) {
+      for (const element of root.querySelectorAll(`${HINTS},${DOTS_AVATAR}`)) {
         if (safe(element) && !candidates.some(other => other.contains(element))) candidates.push(element);
       }
     }
@@ -132,5 +152,6 @@
       JSON.stringify(media(element)) === JSON.stringify(identity.media);
   }
 
-  globalThis.DotPetDockTargeting = { safe, normalize, identify, resolve, automatic, roots, matchesIdentity, HINTS };
+  globalThis.DotPetDockTargeting = { safe, normalize, identify, resolve, automatic, roots, matchesIdentity,
+    dotsAvatar, HINTS: `${HINTS},${DOTS_AVATAR}` };
 })();

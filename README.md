@@ -5,11 +5,10 @@ explicit handle, then lock it in place. A small, local-only Chrome Manifest V3
 extension with no build step, account, server, or API key.
 
 **v0.2.0 compatibility:** tested as an actual unpacked extension in Chromium
-against SVG/canvas fixtures, including transformed and clipped containers.
-**The authenticated production Dots interface has not been tested.** No browser
-session was available for that validation. Automatic detection uses conservative
-semantic hints; these are not verified production selectors. Manual selection
-is the fallback. See [validation evidence](docs/validation.md).
+against SVG/canvas/CSS-sprite fixtures, and against a live production Dots pet
+in Chrome on October 16, 2026. The production adapter recognizes the pet avatar
+and its native button overlay; the nametag keeps its original display size.
+ChatGPT's private DOM can change. See [validation evidence](docs/validation.md).
 
 ## Install or update
 
@@ -30,8 +29,8 @@ check it out before loading the folder.
 
 ## Use
 
-1. Open ChatGPT with the pet visible. A uniquely marked pet frame can be detected
-   automatically. Otherwise open the extension popup and use **Find pet
+1. Open ChatGPT with the pet visible. A supported Dots avatar or uniquely marked
+   pet frame can be detected automatically. Otherwise open the extension popup and use **Find pet
    automatically**, or **Pick pet on page** and click the artwork.
 2. Check the outlined frame. Use **↑ Parent** if only part of the pet moved.
    Broad conversation, sidebar, and editor containers are rejected. **Esc**
@@ -86,13 +85,15 @@ Screenshot: a local test fixture, not the authenticated ChatGPT interface.
 
 ## Known limitations
 
-- Production compatibility and a complete live Dots workflow still need an
-  authenticated browser check. ChatGPT may change its private DOM at any time.
+- Production validation covers one Dots CSS-sprite layout in Chrome. Other
+  layouts and future DOM changes may require an adapter update. Automatic
+  detection waits when multiple eligible pet frames are present.
 - SVG elements themselves cannot enter the popover top layer; selection promotes
   a small HTML parent. If no safe parent exists, selection is rejected. Existing
   website popovers and broad UI containers are deliberately left alone.
-  A clickable pet frame is supported when it has a pet semantic hint; unmarked
-  interactive controls are rejected to avoid moving ordinary site buttons.
+  A clickable pet frame is supported when it has a pet semantic hint. The
+  production Dots avatar also supports its single native overlay button;
+  frames with additional controls and ordinary unmarked buttons are rejected.
 - Open Shadow DOM can be searched. Closed Shadow DOM is unsupported. Iframes
   can be selected only at their outer boundary; inner cross-origin content is
   not inspected. A pet whose renderer stops when out of flow/intersection may
@@ -127,12 +128,12 @@ available names for an unknown test name). `CHROME_EXECUTABLE` can select a
 compatible Chromium binary; use Playwright's bundled Chromium for reproducible
 unpacked-extension support.
 
-Nineteen tests load the **actual unpacked MV3 extension** in isolated temporary Chromium
+Twenty-four tests load the **actual unpacked MV3 extension** in isolated temporary Chromium
 profiles and fulfill all ChatGPT fixture requests locally. They exercise content
 script matching, real extension storage, popup messaging, selection and parent
 selection, drag/resize, native animation/styles, lock/reset, reload/remount/SPA,
 viewport recovery, clipping, SVG/canvas, and safe failure without a pet. These
-are simulated pages, **not production ChatGPT results**.
+are simulated pages; separate live checks are described in the validation notes.
 One additional browser regression controls storage-response latency to check
 that early page events cannot override a saved Reset before initialization.
 

@@ -23,8 +23,9 @@ attribute changes are retained on Reset. No backing canvas dimensions or
 renderer assets are modified.
 
 Target selection rejects broad page/content/editor containers and requires a
-small visual target. Automatic hints are exact semantic test IDs/labels,
-**not observed production selectors**. Recovery validates the saved tag,
+small visual target. Generic automatic hints use exact semantic test IDs/labels. The production
+CSS-sprite adapter additionally validates the observed avatar structure below.
+Recovery validates the saved tag,
 visual media kinds, and unique selector path, including accessible Shadow DOM
 boundaries. An unambiguous semantic marker can recover a changed wrapper;
 otherwise a stale or unsafe match waits for manual selection.
@@ -50,13 +51,22 @@ Manifest V3 extension** into temporary browser profiles. All fixture ChatGPT
 requests are fulfilled locally; no authenticated profile, cookie export,
 conversation content, or production pet assets are used.
 
-`python tests/smoke_browser.py` exercises 19 unpacked-extension browser cases:
+`python tests/smoke_browser.py` exercises 24 unpacked-extension browser cases
+plus one controlled storage-latency case:
 
 - Automatic detection and manual SVG/container selection, parent promotion,
   rejection of sidebar/conversation and interactive UI wrappers, and invalid
   saved selectors.
 - Semantically marked native button pets retain their click handlers through
   automatic/manual selection and Reset; unrelated controls remain rejected.
+- A sanitized production-shaped CSS sprite and native overlay button support
+  automatic/manual selection, native clicks and animation, scaling, locking,
+  reload, late mounting, and cloned-frame remount recovery. Ordinary CSS avatars
+  and frames containing additional controls remain rejected.
+- Popover overflow preserves the original visible overflow instead of adding
+  scrollbars. At 50%, 300%, and 500%, sprite nametag dimensions remain unchanged,
+  the frame fits the artwork plus the unscaled label, and Reset removes the
+  compensation without changing the label's inline styles.
 - Pointer dragging, keyboard resizing at 50%/500%, clipped/transformed source
   containers, reachable controls, and recovery from off-screen positions.
 - Preserved layout space, native CSS animation and transform updates,
@@ -86,25 +96,40 @@ GitHub Actions workflow repeats syntax and browser checks on Ubuntu. Fixture
 screenshots are explicitly labeled; they do not demonstrate production
 compatibility.
 
-## Production evidence and remaining dependency
+## Production evidence and limits
 
-**Authenticated production Dots was not tested.** Safe browser-session
-classification found zero windows in Chrome and Vivaldi, and no reachable
-local browser debugging endpoint. A native ChatGPT process is not an
-inspectable browser Dots session. No actual production renderer, element
-hierarchy, animation boundary, clipping ancestry, iframe, or Shadow DOM
-behavior is claimed.
+Live production Dots was checked on October 16, 2026 in Chrome 155.0.8059.85
+on macOS using the actual unpacked extension from this checkout. Only renderer
+and container metadata and observed behavior were recorded; no chats, artwork
+URLs, cookies, credentials, or personal browser profile were copied.
 
-The remaining live check is to identify the actual visual container, enlarge
-and move it, verify animation and native interactions, use ordinary ChatGPT
-controls, navigate/reload, then unlock and restore the default layout. If the
-renderer pauses outside its original intersection/layout context, or uses a
-closed Shadow DOM boundary with no safe HTML frame, a production-specific
-adapter may be necessary. Raster/canvas/WebGL blur cannot be judged from the
-SVG fixture and cannot be repaired by CSS creating extra image detail.
+The original implementation failed both automatic and manual selection. The
+visible pet uses a CSS background sprite inside a small avatar frame, with a
+sibling button overlay for the native profile action. The old media-only rules
+rejected this structure. The adapter recognizes the observed `group/avatar`
+and `group/orbit-profile` class tokens, requires one sprite and one direct
+`button.absolute.inset-0.touch-none` overlay, and moves the whole native frame.
+It does not depend on the renderer's generated CSS class names or the pet's name.
 
-No credentials, authentication state, production chats, or personal browser
-profiles belong in this repository.
+Live checks verified automatic selection, 300%/500% enlargement, native button
+hit testing, movement, locking/unlocking, and continuing native sprite frames.
+Clicking the enlarged pet opened its native profile, which closed normally.
+The saved 300% size, position, and lock state survived reload.
+
+Two presentation issues discovered in live use were reproduced in regressions:
+Chrome's popover UA overflow introduced scrollbars, and scaling the whole frame
+enlarged the nametag. The dock now preserves the original overflow, compensates
+the nametag's zoom and width, and fits the frame to the enlarged artwork plus
+the original label height. Live geometry checks confirmed unchanged label
+width/height and visible overflow at 50%, 300%, and 500%, including a reload at
+50%. Reset was observed to restore the native 56 × 82 frame with no owned inline
+styles, popover attribute, or placeholder.
+
+This validates one production layout, not every account, pet, or future DOM.
+Automated fixtures cover SPA/remount recovery; a live navigation attempt was
+inconclusive and is not counted as production SPA evidence. Raster artwork
+remains limited by its native resolution. Closed Shadow DOM and renderers that
+pause outside their original layout context may need additional adapters.
 
 ## References
 
