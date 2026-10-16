@@ -21,7 +21,7 @@ h1 { font-size: 17px; margin: 0; line-height: 1.3; }
 #status[data-kind="ready"] { border-left-color: #9274e9; }
 #status[data-kind="unsupported"] { border-left-color: #776d82; color: #bbb1c4; }
 button { font: inherit; font-weight: 650; cursor: pointer; transition: background .15s ease, border-color .15s ease, opacity .15s ease; }
-button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid #f3c86d; outline-offset: 3px; }
+button:focus-visible, input:focus-visible { outline: 2px solid #f3c86d; outline-offset: 3px; }
 button:disabled { opacity: .45; cursor: not-allowed; }
 .actions { display: grid; gap: 7px; }
 .primary, .secondary { width: 100%; border-radius: 9px; padding: 9px 12px; }
@@ -40,9 +40,10 @@ input[type=range]:disabled { cursor: not-allowed; }
 .range-labels { display: flex; justify-content: space-between; margin-top: 2px; color: #8f84a1; font-size: 10px; }
 .check { display: flex; align-items: center; gap: 8px; margin-top: 13px; color: #dfd5e9; cursor: pointer; }
 .check input { width: 16px; height: 16px; margin: 0; accent-color: #9074d7; }
-.animation-controls { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 6px; margin-top: 7px; }
-.animation-controls select { min-width: 0; color: inherit; background: #191523; border: 1px solid #60546d; border-radius: 7px; padding: 6px; font: inherit; }
-.animation-controls button { width: auto; padding: 6px 9px; }
+.animation-controls { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin-top: 7px; }
+.animation-controls button { display: grid; place-items: center; min-width: 0; height: 38px; padding: 6px; }
+.animation-controls svg { width: 22px; height: 22px; }
+.animation-controls button[data-playing="true"] { background: #58418e; border-color: #b89bf8; color: #fff; }
 #animation-status { margin-top: 7px; }
 .help, .shortcut { color: #b7a9c5; margin: 13px 0 0; font-size: 11px; }
 .shortcut { color: #8f84a1; margin-top: 8px; }

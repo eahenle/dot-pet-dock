@@ -101,7 +101,6 @@
         <button id="parent" title="Target the selected element's parent container">↑ Parent</button>
         <button id="wave" title="Play the pet's wave animation once">Wave</button>
         <button id="jump" title="Play the pet's jump animation once">Jump</button>
-        <button id="animation-stop" title="Return to live activity">Stop</button>
         <button id="lock" title="Hide the editing handles">Lock</button>
         <button id="reset" title="Restore the page's original pet display">Reset</button>
       </div>
@@ -451,7 +450,6 @@
     const toolbar = $('toolbar');
     const animationState = animations.state(target);
     $('wave').style.display = $('jump').style.display = animationState.animationAvailable ? '' : 'none';
-    $('animation-stop').style.display = animationState.playing ? '' : 'none';
     // Toolbar and resize handle are independently clamped, even for a pet that
     // is larger than the viewport. Native pet pointer events stay unobstructed.
     toolbar.style.position = 'fixed';
@@ -689,7 +687,6 @@
       catch (error) { toast(error.message); }
     });
   }
-  listen($('animation-stop'), 'click', () => { animations.stop(); renderFrame(); });
 
   listen(picker, 'pointermove', event => { if (picking) showHover(beneathPicker(event.clientX, event.clientY)); });
   listen(picker, 'pointerdown', event => {
@@ -829,7 +826,6 @@
           try { animations.play(target, message.clip); renderFrame(); }
           catch (failure) { error = failure.message; }
           break;
-        case 'STOP_ANIMATION': animations.stop(); renderFrame(); break;
         default: error = 'Unknown action.';
       }
       sendResponse({ ...state(), ok: !error, ...(error ? { error } : {}) });

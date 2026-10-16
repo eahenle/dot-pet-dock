@@ -45,9 +45,9 @@ check it out before loading the folder.
    or find a pet again.
 
 For a supported Dots pet, **Wave** and **Jump** on the dock play the native
-animation once. The extension popup offers all nine clips through **Play an
-animation → Play**, including while locked. **Stop** returns immediately to
-live activity; otherwise it returns automatically after the clip. This previews
+animation once. The extension popup offers an icon for each of the nine clips,
+including while locked. Click an icon to play immediately; hover to see its name.
+Playback returns automatically to live activity after the clip. This previews
 the existing artwork without changing ChatGPT's working/status state. Playback
 stops when the tab is hidden, the selected renderer disappears, or you Reset.
 Unsupported sprite layouts keep animation controls disabled.

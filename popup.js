@@ -138,9 +138,10 @@ function renderControls() {
 
 function renderAnimations() {
   const available = tabSupported && connected && state.selected && state.animationAvailable && !state.picking;
-  $('animation-clip').disabled = !available || busy.animation;
-  $('animation-play').disabled = !available || busy.animation;
-  $('animation-stop').disabled = !available || !state.playing || busy.animation;
+  for (const button of $('animation-buttons').querySelectorAll('button')) {
+    button.disabled = !available || busy.animation;
+    button.dataset.playing = String(button.dataset.clip === state.playing);
+  }
   const label = globalThis.DotPetDockAnimations.clips[state.playing]?.label;
   $('animation-status').textContent = !available ? 'Select a supported pet to play animations.'
     : label ? `Playing ${label}…` : 'Plays once, then returns to live activity.';
@@ -319,19 +320,29 @@ $('reset').addEventListener('click', async () => {
   else renderControls();
 });
 
-draw(state);
+const animationIcons = {
+  idle: '<path d="M4 12c2-4 4 4 6 0s4 4 6 0 3 0 4 0"/><path d="M7 5h.01M17 5h.01M9 19h6"/>',
+  'running-right': '<path d="M4 8h6l-2 6 5 2 2 5M9 14l-5 6M10 8l5 4h5M16 5h4m-2-2 2 2-2 2"/><circle cx="12" cy="4" r="2"/>',
+  'running-left': '<g transform="translate(24 0) scale(-1 1)"><path d="M4 8h6l-2 6 5 2 2 5M9 14l-5 6M10 8l5 4h5M16 5h4m-2-2 2 2-2 2"/><circle cx="12" cy="4" r="2"/></g>',
+  waving: '<path d="m7 12-2-5a1.5 1.5 0 0 1 3-1l2 5-1-7a1.5 1.5 0 0 1 3 0l1 7 1-6a1.5 1.5 0 0 1 3 .5l-1 7 2-3a1.5 1.5 0 0 1 2 2l-4 7a6 6 0 0 1-10 0l-3-4a1.5 1.5 0 0 1 2-2l3 3M20 3l1-1M3 3 2 2"/>',
+  jumping: '<path d="M12 16V3m-4 4 4-4 4 4M5 17l-2 3h18l-2-3"/>',
+  failed: '<circle cx="12" cy="12" r="9"/><path d="M8 9h.01M16 9h.01M8 17c2-3 6-3 8 0"/>',
+  waiting: '<path d="M6 3h12M6 21h12M7 3v4l10 10v4M17 3v4L7 17v4M9 18h6"/>',
+  running: '<rect x="3" y="4" width="18" height="13" rx="2"/><path d="m7 8 3 3-3 3M13 14h4M8 21h8M12 17v4"/>',
+  review: '<circle cx="10" cy="10" r="6"/><path d="m15 15 6 6M7 10l2 2 4-4"/>'
+};
 for (const [id, clip] of Object.entries(globalThis.DotPetDockAnimations.clips)) {
-  const option = document.createElement('option');
-  option.value = id; option.textContent = clip.label;
-  $('animation-clip').append(option);
-}
-$('animation-clip').value = 'waving';
-for (const [id, action] of [['animation-play', 'ANIMATE'], ['animation-stop', 'STOP_ANIMATION']]) {
-  $(id).addEventListener('click', async () => {
+  const button = document.createElement('button');
+  button.type = 'button'; button.className = 'secondary'; button.dataset.clip = id;
+  button.title = clip.label; button.setAttribute('aria-label', `Play ${clip.label}`);
+  button.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${animationIcons[id]}</svg>`;
+  button.addEventListener('click', async () => {
     busy.animation = true; renderControls();
-    await request(action, { clip: $('animation-clip').value });
+    await request('ANIMATE', { clip: id });
     busy.animation = false; renderControls();
   });
+  $('animation-buttons').append(button);
 }
 
+draw(state);
 void init();

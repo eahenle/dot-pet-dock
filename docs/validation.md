@@ -145,20 +145,21 @@ latest live frame. New clips replace previous clips. Reset, target removal,
 page hiding, and extension cleanup cancel playback. Unknown grids and important
 native frame-position declarations are rejected.
 
-Wave/Jump shortcuts appear on the editable dock. The popup provides all nine
-clips plus Play/Stop while locked or unlocked. Animation previews are transient
-and do not change or persist task/activity state. No new permissions are needed.
+Wave/Jump shortcuts appear on the editable dock. The popup provides an SVG icon
+button for each of the nine clips while locked or unlocked. Each click plays
+immediately and the active icon is highlighted; hover titles and accessible
+names identify each animation. Animation previews are transient and do not
+change or persist task/activity state. No new permissions are needed.
 
 Browser regressions exercise native frame progression, return to a state changed
-during playback, clip replacement, Stop/Reset cleanup, narrow-toolbar layout,
+during playback, clip replacement and Reset cleanup, narrow-toolbar layout,
 locked-popup messaging, rejected clip IDs, v1 coordinates, and unsupported grids.
 A controlled delayed polling failure also verifies that an older transport error
-cannot disable Stop for a newer animation.
+cannot clear the active icon/status for a newer animation.
 
 Live playback of Wave, Jump, and Work on the production 8×11 sprite reached
-rows 3, 4, and 7, respectively, and advanced through their native frames. Stop
-removed the preview immediately; one-shot completion returned to native idle
-frames. The nametag remained 20 px high, overflow remained visible, and the
+rows 3, 4, and 7, respectively, and advanced through their native frames.
+One-shot completion returned to native idle frames. The nametag remained 20 px high, overflow remained visible, and the
 saved 250% scale and locked state were unchanged.
 
 ## References

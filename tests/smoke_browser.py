@@ -486,8 +486,8 @@ def test_native_animation_wave_returns_to_live_state(playwright: Any) -> None:
         assert not h.errors, h.errors
 
 
-def test_native_animation_replacement_stop_and_reset(playwright: Any) -> None:
-    """New clips replace old ones and Stop/Reset remove only preview effects."""
+def test_native_animation_replacement_and_reset(playwright: Any) -> None:
+    """New clips replace old ones and Reset removes only preview effects."""
     with harness(playwright, "sprite", {"width": 320, "height": 320}) as h:
         page = h.open()
         wait_for_target(page)
@@ -498,9 +498,6 @@ def test_native_animation_replacement_stop_and_reset(playwright: Any) -> None:
         assert toolbar["x"] >= 8 and toolbar["x"] + toolbar["width"] <= 312
         page.wait_for_function("() => parseFloat(getComputedStyle(document.querySelector('#sprite-art')).backgroundPositionY) === 40")
         assert page.locator("#sprite-art").evaluate("e => e.getAnimations().filter(a => a.id === 'dot-pet-dock-clip').length") == 1
-        root(page).locator("#animation-stop").click()
-        page.wait_for_function("() => parseFloat(getComputedStyle(document.querySelector('#sprite-art')).backgroundPositionY) === 0")
-        root(page).locator("#jump").click()
         root(page).locator("#reset").click()
         assert page.locator("#sprite-art").evaluate("e => !e.getAnimations().some(a => a.id === 'dot-pet-dock-clip')")
         assert page.locator("#sprite-art").get_attribute("style") is None
@@ -509,7 +506,7 @@ def test_native_animation_replacement_stop_and_reset(playwright: Any) -> None:
 
 
 def test_popup_animation_controls_work_while_locked(playwright: Any) -> None:
-    """The real popup must play and stop native clips on a locked pet."""
+    """Each popup icon must play immediately on a locked pet."""
     with harness(playwright, "sprite") as h:
         page = h.open()
         wait_for_target(page)
@@ -527,20 +524,18 @@ def test_popup_animation_controls_work_while_locked(playwright: Any) -> None:
           };
         })();""")
         popup.goto(f"chrome-extension://{unpacked_extension_id()}/popup.html")
-        popup.locator("#animation-play").wait_for(state="visible", timeout=1500)
-        popup.locator("#animation-clip").select_option("running")
-        popup.locator("#animation-play").click()
+        popup.get_by_role("button", name="Play Work", exact=True).wait_for(state="visible", timeout=1500)
+        assert popup.locator("#animation-buttons button").count() == 9
+        popup.get_by_role("button", name="Play Work", exact=True).click()
         page.wait_for_function("() => parseFloat(getComputedStyle(document.querySelector('#sprite-art')).backgroundPositionY) === 70")
-        assert popup.locator("#animation-stop").is_enabled()
-        popup.locator("#animation-stop").click()
-        page.wait_for_function("() => parseFloat(getComputedStyle(document.querySelector('#sprite-art')).backgroundPositionY) === 0")
+        page.wait_for_function("() => !document.querySelector('#sprite-art').getAnimations().some(a => a.id === 'dot-pet-dock-clip')")
         invalid = popup.evaluate("""async () => {
           const [tab] = await chrome.tabs.query({active:true,currentWindow:true});
           return chrome.tabs.sendMessage(tab.id, {namespace:'DOT_PET_DOCK',action:'ANIMATE',clip:'__proto__'});
         }""")
         assert invalid["ok"] is False and invalid["playing"] is None
         # Delay one STATE transport failure while real animation messages keep
-        # flowing. An old poll must not clear a newer clip's Stop control.
+        # flowing. An old poll must not clear the newer clip's active icon/status.
         popup.evaluate("""() => {
           const send = chrome.tabs.sendMessage.bind(chrome.tabs);
           let delayNextPoll = true;
@@ -554,16 +549,14 @@ def test_popup_animation_controls_work_while_locked(playwright: Any) -> None:
             return send(id, message);
           };
         }""")
-        popup.locator("#animation-clip").select_option("waving")
-        popup.locator("#animation-play").click()
+        popup.get_by_role("button", name="Play Wave", exact=True).click()
         popup.wait_for_function("() => typeof window.rejectOldPoll === 'function'")
-        popup.locator("#animation-clip").select_option("jumping")
-        popup.locator("#animation-play").click()
+        popup.get_by_role("button", name="Play Jump", exact=True).click()
         popup.locator("#animation-status", has_text="Playing Jump").wait_for()
         popup.evaluate("window.rejectOldPoll()")
         popup.wait_for_timeout(30)
-        assert popup.locator("#animation-stop").is_enabled(), "stale failure hid Stop for the newer clip"
-        popup.locator("#animation-stop").click()
+        assert "Playing Jump" in popup.locator("#animation-status").text_content()
+        assert popup.get_by_role("button", name="Play Jump", exact=True).get_attribute("data-playing") == "true"
         assert popup.locator("#lock").is_checked()
         assert not h.errors, h.errors
 
@@ -576,7 +569,7 @@ def test_animation_atlas_versions_and_unsupported_renderers(playwright: Any) -> 
         page.locator("#sprite-art").evaluate("e => { e.style.backgroundSize = '800% 900%'; }")
         root(page).locator("#wave").click()
         page.wait_for_function("() => parseFloat(getComputedStyle(document.querySelector('#sprite-art')).backgroundPositionY) === 37.5")
-        root(page).locator("#animation-stop").click()
+        page.wait_for_function("() => !document.querySelector('#sprite-art').getAnimations().some(a => a.id === 'dot-pet-dock-clip')")
         page.locator("#sprite-art").evaluate("e => { e.style.backgroundSize = '700% 1100%'; }")
         root(page).locator("#wave").wait_for(state="hidden")
         page.locator("#sprite-art").evaluate("e => { e.style.backgroundSize = '800% 1100%'; e.style.setProperty('background-position-x','0%','important'); }")
@@ -1254,7 +1247,7 @@ def test_popup_scale_survives_close_with_delayed_replies(playwright: Any) -> Non
 TESTS: dict[str, Callable[[Any], None]] = {
     "auto": test_auto_detect_and_svg_parent,
     "animation-wave": test_native_animation_wave_returns_to_live_state,
-    "animation-stop": test_native_animation_replacement_stop_and_reset,
+    "animation-lifecycle": test_native_animation_replacement_and_reset,
     "animation-popup": test_popup_animation_controls_work_while_locked,
     "animation-layouts": test_animation_atlas_versions_and_unsupported_renderers,
     "sprite": test_production_css_sprite_keeps_overlay_and_recovers,
