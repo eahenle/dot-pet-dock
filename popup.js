@@ -1,68 +1,293 @@
 'use strict';
 
-const $ = (id) => document.getElementById(id);
-let activeTabId = null;
-let selected = false;
+const MESSAGE_NAMESPACE = 'DOT_PET_DOCK';
+const MIN_SCALE_PERCENT = 50;
+const MAX_SCALE_PERCENT = 500;
 
-async function send(action, extra = {}) {
-  if (!activeTabId) throw new Error('No active ChatGPT tab.');
-  return chrome.tabs.sendMessage(activeTabId, {
-    namespace: 'DOT_PET_DOCK',
-    action,
-    ...extra
-  });
+const $ = (id) => document.getElementById(id);
+const clamp = (value, minimum, maximum) => Math.min(Math.max(value, minimum), maximum);
+
+let activeTabId = null;
+let tabSupported = false;
+let connected = false;
+let state = {
+  ok: true,
+  selected: false,
+  saved: false,
+  locked: false,
+  scale: 1,
+  picking: false
+};
+let busy = { find: false, pick: false, lock: false, reset: false };
+let messageEpoch = 0;
+let lastRequestedScale = null;
+
+class DockMessageError extends Error {
+  constructor(message, transport = false) {
+    super(message);
+    this.name = 'DockMessageError';
+    this.transport = transport;
+  }
 }
 
-function draw(state) {
-  selected = !!state.saved;
-  $('scale').disabled = !selected;
-  $('lock').disabled = !selected;
-  $('reset').disabled = !selected;
-  $('lock').checked = !!state.locked;
-  $('scale').value = Math.round((state.scale ?? 1) * 100);
-  $('scale-output').value = `${$('scale').value}%`;
-  $('status').textContent = state.picking
-    ? 'Click the pet on the page to select it.'
-    : state.selected
-      ? state.locked ? 'Pet docked. Unlock to edit.' : 'Pet selected. Drag the Move handle to reposition.'
-      : state.saved
-        ? 'Saved pet not visible. Navigate to its page or pick again.'
-        : 'No pet selected yet.';
+function isSupportedUrl(url) {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === 'https:' && parsed.hostname === 'chatgpt.com';
+  } catch (_) {
+    return false;
+  }
+}
+
+function errorText(error) {
+  const message = String(error?.message || error || '').trim();
+  if (!message || message === 'undefined') {
+    return 'Dot Pet Dock could not reach this ChatGPT tab. Reload the tab and try again.';
+  }
+  if (/receiving end does not exist|could not establish connection/i.test(message)) {
+    return 'Reload this ChatGPT tab to reconnect Dot Pet Dock.';
+  }
+  return message;
+}
+
+function scaleValue(value) {
+  const numeric = Number(value);
+  const percent = Number.isFinite(numeric)
+    ? clamp(Math.round(numeric * 100), MIN_SCALE_PERCENT, MAX_SCALE_PERCENT)
+    : 100;
+  return percent / 100;
+}
+
+function normalizeState(value) {
+  const raw = value && typeof value === 'object' ? value : {};
+  return {
+    ok: raw.ok !== false,
+    selected: !!raw.selected,
+    saved: !!raw.saved,
+    locked: !!raw.locked,
+    scale: scaleValue(raw.scale),
+    picking: !!raw.picking,
+    error: raw.error ? String(raw.error) : '',
+    notice: raw.notice ? String(raw.notice) : ''
+  };
+}
+
+function setStatus(message, kind = 'ready') {
+  const status = $('status');
+  status.textContent = message;
+  status.dataset.kind = kind;
+}
+
+function statusForState() {
+  if (!tabSupported) {
+    return { message: 'This tab is not a supported ChatGPT page.', kind: 'unsupported' };
+  }
+  if (!connected) {
+    return { message: 'Reload this ChatGPT tab to connect Dot Pet Dock.', kind: 'error' };
+  }
+  if (state.error) return { message: state.error, kind: 'error' };
+  if (state.notice) return { message: state.notice, kind: 'ready' };
+  if (state.picking) {
+    return { message: 'Click the pet on the page to select it. Press Esc to cancel.', kind: 'ready' };
+  }
+  if (state.selected) {
+    return {
+      message: state.locked
+        ? 'Pet docked. Uncheck Lock below to edit the handles.'
+        : 'Pet selected. Drag the Move handle to reposition it.',
+      kind: 'ready'
+    };
+  }
+  if (state.saved) {
+    return {
+      message: 'Saved settings are waiting for this pet. Navigate to a conversation where it appears or pick it again.',
+      kind: 'waiting'
+    };
+  }
+  return { message: 'No pet selected yet. Find it automatically or pick it on the page.', kind: 'ready' };
+}
+
+function renderControls() {
+  const canMessage = tabSupported && connected;
+  const percent = Math.round(state.scale * 100);
+  const find = $('find');
+  const pick = $('pick');
+  const scale = $('scale');
+  const lock = $('lock');
+  const reset = $('reset');
+
+  find.disabled = !canMessage || state.picking || busy.find;
+  pick.disabled = !canMessage || state.picking || busy.pick;
+  find.textContent = busy.find ? 'Looking for pet…' : 'Find pet automatically';
+  pick.textContent = busy.pick ? 'Opening picker…' : 'Pick pet on page';
+
+  scale.disabled = !canMessage || !state.selected;
+  scale.value = String(percent);
+  scale.setAttribute('aria-valuenow', String(percent));
+  $('scale-output').value = `${percent}%`;
+
+  lock.disabled = !canMessage || !state.selected || busy.lock;
+  lock.checked = state.locked;
+  reset.disabled = !canMessage || !state.saved || busy.reset;
+  reset.textContent = busy.reset ? 'Restoring…' : 'Restore original display';
+}
+
+function draw(nextState = state) {
+  state = normalizeState(nextState);
+  renderControls();
+  const status = statusForState();
+  setStatus(status.message, status.kind);
+}
+
+function showError(error) {
+  setStatus(errorText(error), 'error');
+}
+
+async function send(action, extra = {}) {
+  if (activeTabId == null) {
+    throw new DockMessageError('No supported ChatGPT tab is active.', true);
+  }
+
+  let response;
+  try {
+    response = await chrome.tabs.sendMessage(activeTabId, {
+      namespace: MESSAGE_NAMESPACE,
+      action,
+      ...extra
+    });
+  } catch (error) {
+    throw new DockMessageError(errorText(error), true);
+  }
+
+  if (!response || response.ok === false) {
+    throw new DockMessageError(response?.error || 'Dot Pet Dock could not complete that action.');
+  }
+  return response;
+}
+
+async function request(action, extra = {}) {
+  const requestEpoch = ++messageEpoch;
+  try {
+    const response = await send(action, extra);
+    if (requestEpoch !== messageEpoch) return null;
+    connected = true;
+    draw(response);
+    return response;
+  } catch (error) {
+    if (requestEpoch !== messageEpoch) return null;
+    if (error.transport) connected = false;
+    renderControls();
+    showError(error);
+    return null;
+  }
 }
 
 async function init() {
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (!tab?.id || !tab.url?.startsWith('https://chatgpt.com/')) {
-      throw new Error('Open ChatGPT in this Chrome window first.');
-    }
-    activeTabId = tab.id;
-    draw(await send('STATE'));
+    activeTabId = tab?.id ?? null;
+    tabSupported = isSupportedUrl(tab?.url);
+    connected = false;
+    draw(state);
+    if (!tabSupported) return;
+
+    const response = await send('STATE');
+    connected = true;
+    draw(response);
+    lastRequestedScale = state.scale;
   } catch (error) {
-    $('status').textContent = error.message || 'Reload ChatGPT and try again.';
-    $('pick').disabled = true;
+    if (error.transport) connected = false;
+    renderControls();
+    showError(error);
   }
 }
 
-$('pick').addEventListener('click', async () => {
-  try { await send('PICK'); window.close(); }
-  catch (error) { $('status').textContent = error.message; }
+$('find').addEventListener('click', async () => {
+  busy.find = true;
+  renderControls();
+  const response = await request('FIND');
+  busy.find = false;
+  if (response) draw(response);
+  else renderControls();
 });
 
-$('scale').addEventListener('input', async (event) => {
-  $('scale-output').value = `${event.target.value}%`;
-  try { await send('SET_SCALE', { scale: Number(event.target.value) / 100 }); }
-  catch (error) { $('status').textContent = error.message; }
+$('pick').addEventListener('click', async () => {
+  busy.pick = true;
+  renderControls();
+  const response = await request('PICK');
+  busy.pick = false;
+  if (response) {
+    draw(response);
+    window.close();
+  } else {
+    renderControls();
+  }
+});
+
+function sendScale(nextScale) {
+  lastRequestedScale = nextScale;
+  const requestEpoch = ++messageEpoch;
+  // `send` calls chrome.tabs.sendMessage before its first await, so every
+  // slider input is dispatched immediately. The epoch prevents an older
+  // response or error from replacing the latest optimistic value.
+  const pending = send('SET_SCALE', { scale: nextScale });
+  void pending.then((response) => {
+    if (requestEpoch !== messageEpoch) return;
+    connected = true;
+    draw(response);
+  }).catch((error) => {
+    if (requestEpoch !== messageEpoch) return;
+    if (error.transport) connected = false;
+    renderControls();
+    showError(error);
+  });
+}
+
+function readScaleInput(event) {
+  const percent = clamp(Math.round(Number(event.target.value)), MIN_SCALE_PERCENT, MAX_SCALE_PERCENT);
+  event.target.value = String(percent);
+  return percent / 100;
+}
+
+$('scale').addEventListener('input', (event) => {
+  const nextScale = readScaleInput(event);
+  state = { ...state, scale: nextScale, error: '', notice: '' };
+  draw(state);
+  sendScale(nextScale);
+});
+
+$('scale').addEventListener('change', (event) => {
+  const nextScale = readScaleInput(event);
+  if (nextScale === lastRequestedScale) return;
+  state = { ...state, scale: nextScale, error: '', notice: '' };
+  draw(state);
+  sendScale(nextScale);
 });
 
 $('lock').addEventListener('change', async (event) => {
-  try { draw(await send('LOCK', { locked: event.target.checked })); }
-  catch (error) { $('status').textContent = error.message; }
+  const locked = event.target.checked;
+  busy.lock = true;
+  renderControls();
+  const response = await request('LOCK', { locked });
+  busy.lock = false;
+  if (response) draw(response);
+  else renderControls();
 });
 
 $('reset').addEventListener('click', async () => {
-  try { draw(await send('RESET')); }
-  catch (error) { $('status').textContent = error.message; }
+  // Reset intentionally stays available whenever `saved` is true, even if the
+  // pet is currently waiting for a route or DOM node to reappear.
+  lastRequestedScale = null;
+  busy.reset = true;
+  renderControls();
+  const response = await request('RESET');
+  busy.reset = false;
+  if (response) {
+    lastRequestedScale = state.scale;
+    renderControls();
+  }
+  else renderControls();
 });
 
-init();
+draw(state);
+void init();

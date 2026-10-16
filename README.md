@@ -1,60 +1,145 @@
 # Dot Pet Dock
 
-A small, local-only Chrome extension to resize and move the pet displayed in **Dots on the ChatGPT website**. No build step, account, external server, or API key.
+Give your ChatGPT Dot pet more room: enlarge it **50–500%**, move it with an
+explicit handle, then lock it in place. A small, local-only Chrome Manifest V3
+extension with no build step, account, server, or API key.
 
-**Status:** v0.1 prototype. The live Dots DOM has not been inspected. The click-to-select mechanism makes it usable without assuming ChatGPT's internal class names. It has been tested against a local simulated ChatGPT page, not against a logged-in Dots page.
+**v0.2.0 compatibility:** tested as an actual unpacked extension in Chromium
+against SVG/canvas/CSS-sprite fixtures, and against a live production Dots pet
+in Chrome on October 16, 2026. The production adapter recognizes the pet avatar
+and its native button overlay; the nametag keeps its original display size.
+ChatGPT's private DOM can change. See [validation evidence](docs/validation.md).
 
-## Install in Chrome
+## Install or update
 
-1. On GitHub, choose **Code → Download ZIP**, then extract it somewhere permanent. Alternatively, clone the repository.
-2. Open `chrome://extensions` in Chrome.
-3. Turn on **Developer mode** (top-right).
-4. Click **Load unpacked** and choose the extracted repository folder (the one containing `manifest.json`).
-5. Reload your `chatgpt.com` tab.
+Requires Chrome 120 or newer. This affects **chatgpt.com in Chrome**, including
+Chromium-based browsers that support unpacked extensions. It cannot change the
+native ChatGPT app's floating pet window.
+
+1. Download **Code → Download ZIP** from this repository and extract it into a
+   permanent folder, or clone the repository.
+2. Open `chrome://extensions` and turn on **Developer mode**.
+3. Choose **Load unpacked** and select the folder containing `manifest.json`.
+4. Pin Dot Pet Dock to the toolbar, then reload your ChatGPT tabs.
+
+To update, replace the files in the same folder (or run `git pull`), click the
+extension's **Reload** button in `chrome://extensions`, and reload ChatGPT.
+Unpacked extensions do not update automatically. If using a pull request branch,
+check it out before loading the folder.
 
 ## Use
 
-1. Open the Dots conversation with your pet visible.
-2. Click the **Dot Pet Dock** extension icon (pin it to Chrome's toolbar if you like).
-3. Click **Pick pet on page**, then click the pet or its visual frame. The yellow outline shows what you are selecting.
-4. Drag the **✥ Move** handle to relocate it. Pull the purple lower-right corner to resize it. Use **↑ Parent** if the selected element is just one piece of the pet rather than the full container.
-5. Use the popup's **Lock in place** checkbox to hide the handles once it's positioned. Reopen the popup and uncheck it to edit again. **Restore original display** reverses the changes.
+1. Open ChatGPT with the pet visible. A supported Dots avatar or uniquely marked
+   pet frame can be detected automatically. Otherwise open the extension popup and use **Find pet
+   automatically**, or **Pick pet on page** and click the artwork.
+2. Check the outlined frame. Use **↑ Parent** if only part of the pet moved.
+   Broad conversation, sidebar, and editor containers are rejected. **Esc**
+   cancels selection.
+3. Adjust the popup's size slider, or drag the purple corner. Drag **✥ Move** to
+   reposition. Controls stay within reach at viewport edges.
+4. Check **Lock in place** in the popup, or click **Lock** on the page. The pet
+   remains visible and keeps its native pointer interactions. Uncheck **Lock**
+   in the popup to edit again.
+5. **Restore original display** restores owned website styles and removes the
+   dock. It also stops automatic attachment on later reloads until you select
+   or find a pet again.
 
-Keyboard: **Alt + Shift + P** activates the picker; **Esc** cancels it. The popup size slider ranges from 50% to 500%.
+Position, size, and lock settings are shared across conversations and saved in
+Chrome's local extension storage. One display is remembered at a time. If the
+pet is absent, settings wait for it to return; Reset remains available.
 
-## How it works
+Keyboard: **Alt + Shift + P** toggles selection. Focus **Move** and use arrow
+keys to move 10 pixels. Focus the resize corner and use arrows to adjust size
+10%. The popup slider supports 1% increments.
 
-- A Chrome Manifest V3 content script runs on `https://chatgpt.com/*` only.
-- You choose the element. The extension changes its CSS positioning and uses the separate CSS `scale` property so animated `transform` effects can continue to work.
-- The selected CSS path, position, size and locked state are saved in Chrome's local extension storage, **scoped to the current page path**. They are restored on reload and after many React re-renders.
-- No page text or pet artwork is read or transmitted to any service. There are no network requests, tracking, injected remote scripts, or dependencies.
-- Removing/disabling the extension or pressing **Restore original display** restores the website's normal behavior. If the UI gets stuck, reload the page after disabling the extension.
+![Extension controls around a pet enlarged to 300% in the automated fixture](docs/images/fixture-dock.png)
 
-## Limitations / next iteration
+Screenshot: a local test fixture, not the authenticated ChatGPT interface.
 
-- Only Chrome's **web version** is affected. It cannot modify the separate native ChatGPT desktop app's floating Pet window.
-- A pet inside a cross-origin iframe can only be selected by its **iframe boundary**, not by elements inside that frame.
-- A CSS enlargement doesn't create new raster image pixels. If the animation was rendered to a low-resolution bitmap/canvas, it may look blurry. True high-resolution rerendering would require inspecting the actual pet implementation.
-- Some Dots layouts may use a transformed or clipped ancestor that prevents the selected element escaping its original region. Selection and styling may need tailoring for the actual DOM.
-- The selection path may break if ChatGPT changes its component hierarchy. Re-pick the pet in that case.
-- Preferences are currently per URL path, not synchronized across all Dot conversations.
+## Rendering, privacy, and recovery
 
-If picking fails, inspect the site element in Chrome DevTools and capture the *non-sensitive* HTML around the pet container (or share a screenshot with the selected element outlined); that is enough to target the correct wrapper more precisely.
+- The original HTML pet frame enters Chrome's **top layer** as a nonmodal manual
+  popover. It stays under its original DOM/React parent. It can escape transformed
+  ancestors, clipping, and stacking contexts without cloning the pet or changing
+  the page's scroll position. An inert placeholder preserves an in-flow slot.
+- CSS `zoom` enlarges the live renderer while leaving the site's `transform`,
+  individual `scale`, `translate`, and `rotate` intact. Native SVG and canvas
+  animation continue in the fixture tests. SVG can render sharply at the new
+  size. CSS enlargement cannot add missing bitmap pixels to a canvas, sprite,
+  image, or WebGL framebuffer. The extension does not alter canvas backing
+  dimensions, WebGL state, or the pet assets.
+- Recovery validates a unique visual identity, using stable IDs/test IDs and
+  guarded hierarchy paths. A unique semantic pet marker can recover a changed
+  wrapper. Ambiguous or unsafe matches wait for manual selection.
+- Only child-list mutations are watched across the document; style observation
+  is limited to the selected node. Geometry tracking runs only while editing.
+  A separate three-second runtime validity check performs best-effort cleanup
+  after disabling/reloading the extension. **Reload ChatGPT after disabling or
+  uninstalling** to guarantee removal of old content scripts.
+- Only `storage` and `activeTab` permissions are requested, and content scripts
+  run on `https://chatgpt.com/*` only. No analytics, remote code, external API,
+  chat text extraction, screenshots, cookies, credentials, or artwork are read
+  or stored by the extension. Saved data contains target-identification
+  metadata, position, scale, and lock state. Browser test profiles are temporary
+  and never use a personal browser profile.
 
-## Files
+## Known limitations
 
-- `manifest.json`: MV3 permissions, site scope and extension UI
-- `content.js`: selection overlay, drag/resize, storage, restoration
-- `popup.html`, `popup.css`, `popup.js`: toolbar popup
-- `icons/`: generated local extension icon sizes
+- Production validation covers one Dots CSS-sprite layout in Chrome. Other
+  layouts and future DOM changes may require an adapter update. Automatic
+  detection waits when multiple eligible pet frames are present.
+- SVG elements themselves cannot enter the popover top layer; selection promotes
+  a small HTML parent. If no safe parent exists, selection is rejected. Existing
+  website popovers and broad UI containers are deliberately left alone.
+  A clickable pet frame is supported when it has a pet semantic hint. The
+  production Dots avatar also supports its single native overlay button;
+  frames with additional controls and ordinary unmarked buttons are rejected.
+- Open Shadow DOM can be searched. Closed Shadow DOM is unsupported. Iframes
+  can be selected only at their outer boundary; inner cross-origin content is
+  not inspected. A pet whose renderer stops when out of flow/intersection may
+  require a site-specific adapter after live investigation.
+- Native modal dialogs/fullscreen content may cover the dock. Large pets can
+  extend beyond a small viewport, while handles remain reachable. Moving and
+  resizing can temporarily cover controls; lock it somewhere convenient.
+- Settings are local to this browser/profile, with no cloud sync. Changes in
+  another open tab are applied on the next reload rather than broadcast live.
+- v0.1 settings migrate only when the current route's old selector identifies a
+  unique, safe visual target. Otherwise select the pet again.
 
-## Run the optional smoke test
+## Test
 
-With Python, Playwright, and Chromium installed:
+Python 3.10+ and Node.js (for syntax checks):
 
 ```bash
-pip install -r requirements-dev.txt
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements-dev.txt
+python -m playwright install chromium
 python tests/smoke_browser.py
+node --check targeting.js
+node --check content.js
+node --check popup.js
 ```
 
-This uses a simulated pet page, not ChatGPT production.
+Linux CI installs Chromium's system dependencies with
+`python -m playwright install --with-deps chromium`. The GitHub Actions workflow
+runs these checks. To run one browser case, use `--test clipped` (the runner lists
+available names for an unknown test name). `CHROME_EXECUTABLE` can select a
+compatible Chromium binary; use Playwright's bundled Chromium for reproducible
+unpacked-extension support.
+
+Twenty-four tests load the **actual unpacked MV3 extension** in isolated temporary Chromium
+profiles and fulfill all ChatGPT fixture requests locally. They exercise content
+script matching, real extension storage, popup messaging, selection and parent
+selection, drag/resize, native animation/styles, lock/reset, reload/remount/SPA,
+viewport recovery, clipping, SVG/canvas, and safe failure without a pet. These
+are simulated pages; separate live checks are described in the validation notes.
+One additional browser regression controls storage-response latency to check
+that early page events cannot override a saved Reset before initialization.
+
+For live verification, use a non-sensitive Dots page: pick the whole pet frame,
+enlarge to 300–500%, move and lock it, test native pet interaction and ordinary
+ChatGPT controls, navigate between conversations, reload, unlock, and Reset.
+Confirm that artwork animation and default layout return correctly. Report
+only renderer/container metadata and observed behavior; do not share chats,
+cookies, credentials, or a browser profile.

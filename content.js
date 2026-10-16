@@ -1,24 +1,12 @@
-/* Dot Pet Dock v0.1.0
- * Only operates in the current user's chatgpt.com tab.
- * Does not scrape, transmit, or inspect conversation text.
- */
+/* Dot Pet Dock v0.2.0: local-only visual display controls. */
 (() => {
   'use strict';
-
   if (window !== window.top || document.getElementById('dot-pet-dock-root')) return;
-
   const MESSAGE_NAMESPACE = 'DOT_PET_DOCK';
-  const MIN_SCALE = 0.5;
-  const MAX_SCALE = 5;
-  const STYLE_PROPS = [
-    'position', 'left', 'top', 'right', 'bottom', 'width', 'height',
-    'min-width', 'min-height', 'max-width', 'max-height', 'z-index',
-    'scale', 'margin'
-  ];
-
   const host = document.createElement('div');
   host.id = 'dot-pet-dock-root';
-  document.body.appendChild(host);
+  document.documentElement.appendChild(host);
+  host.setAttribute('popover', 'manual');
   const shadow = host.attachShadow({ mode: 'open' });
   shadow.innerHTML = `
     <style>
@@ -53,7 +41,7 @@
         background: #201a32; color: #fff;
         font-size: 13px; line-height: 1.5; font-weight: 550;
         box-shadow: 0 8px 28px rgba(0,0,0,.3);
-        white-space: nowrap; pointer-events: none;
+        max-width: calc(100vw - 16px); text-align: center; pointer-events: none;
       }
       #frame {
         display: none; position: fixed;
@@ -108,12 +96,12 @@
     <div id="instruction">Click the pet or its frame to select it. Press Esc to cancel.</div>
     <div id="frame">
       <div id="toolbar" role="toolbar" aria-label="Pet display controls">
-        <button id="move" title="Drag to move the pet">✥ Move</button>
+        <button id="move" title="Drag to move the pet; arrow keys move 10 pixels">✥ Move</button>
         <button id="parent" title="Target the selected element's parent container">↑ Parent</button>
         <button id="lock" title="Hide the editing handles">Lock</button>
         <button id="reset" title="Restore the page's original pet display">Reset</button>
       </div>
-      <div id="resize" role="button" tabindex="0" aria-label="Resize pet display"></div>
+      <button id="resize" aria-label="Resize pet display" title="Drag to resize; arrow keys adjust size"></button>
       <div id="scale-readout"></div>
     </div>
   `;
@@ -128,7 +116,7 @@
     styleNode.remove();
   } catch (_) { /* Older Chromium: use the embedded stylesheet. */ }
 
-  const $ = (id) => shadow.getElementById(id);
+  const $ = id => shadow.getElementById(id);
   const picker = $('picker');
   const hover = $('hover');
   const instruction = $('instruction');
@@ -136,463 +124,695 @@
   const moveHandle = $('move');
   const resizeHandle = $('resize');
   const parentButton = $('parent');
-  const lockButton = $('lock');
-  const resetButton = $('reset');
   const scaleReadout = $('scale-readout');
-
-  let currentKey = null;
-  let routeEpoch = 0;
+  const targeting = globalThis.DotPetDockTargeting;
+  const KEY = 'dot-pet-dock:v2';
+  const clamp = (value, lo, hi) => Math.min(Math.max(value, lo), hi);
+  const finite = (value, fallback) => typeof value === 'number' && Number.isFinite(value) ? value : fallback;
   let saved = null;
   let target = null;
-  let originalStyles = null;
+  let lease = null;
+  let placeholder = null;
+  let presentationSheet = null;
+  let presentationRoot = null;
+  let previousLease = null;
   let picking = false;
-  let highlighted = null;
   let candidateOnDown = null;
   let gesture = null;
-  let reconnectQueued = false;
+  let notice = '';
+  let disposed = false;
+  let enabled = true;
+  let initialized = false;
+  let frameRequest = 0;
+  let reconnectTimer = 0;
+  let saveTimer = 0;
+  let toastTimer = 0;
+  let storageWrites = Promise.resolve();
+  let storageEpoch = 0;
+  let route = location.pathname;
+  const events = new AbortController();
 
-  const clamp = (value, lo, hi) => Math.min(Math.max(value, lo), hi);
-  const finite = (value, fallback) => Number.isFinite(Number(value)) ? Number(value) : fallback;
-  const storageKey = () => `dot-pet-dock:v1:${location.origin}${location.pathname}`;
+  // Popover promotion retains DOM ownership and escapes ancestor clipping and
+  // transformed containing blocks. Never clone/reparent React-managed artwork.
+  const backdropSheet = new CSSStyleSheet();
+  backdropSheet.replaceSync(`
+    [data-dot-pet-dock-target]::backdrop, #dot-pet-dock-root::backdrop {
+      background: transparent !important; pointer-events: none !important;
+    }
+  `);
+  document.adoptedStyleSheets = [...document.adoptedStyleSheets, backdropSheet];
 
-  function validSaved(value) {
-    if (!value || typeof value !== 'object' || typeof value.selector !== 'string' ||
-        !value.selector || value.selector.length > 2000) return null;
+  function listen(element, type, handler, options = {}) {
+    element.addEventListener(type, handler, { ...options, signal: events.signal });
+  }
+
+  function showHost() {
+    if (!host.isConnected) document.documentElement.appendChild(host);
+    if (!host.matches(':popover-open')) host.showPopover();
+  }
+
+  function toast(message) {
+    notice = message;
+    instruction.textContent = message;
+    instruction.style.display = 'block';
+    showHost();
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => {
+      if (!picking) instruction.style.display = 'none';
+      renderFrame();
+    }, 4500);
+  }
+
+  function writeStorage(value, flush = false) {
+    // Snapshot before awaiting; serialize writes so Reset always wins over an
+    // earlier slider/gesture write, including when storage is slow.
+    const snapshot = structuredClone(value);
+    const reportFailure = () => { if (!disposed) toast('Settings could not be saved. Check extension storage and try again.'); };
+    if (flush) {
+      // Send final state to Chrome now, before a possible document unload.
+      // Earlier API calls are already ordered on the storage channel; invalidate
+      // callbacks that have not sent their older snapshots yet.
+      storageEpoch++;
+      try { storageWrites = chrome.storage.local.set({ [KEY]: snapshot }).catch(reportFailure); }
+      catch (_) { reportFailure(); storageWrites = Promise.resolve(); }
+    } else {
+      const epoch = storageEpoch;
+      storageWrites = storageWrites.then(() => {
+        if (epoch === storageEpoch) return chrome.storage.local.set({ [KEY]: snapshot });
+      }).catch(reportFailure);
+    }
+    return storageWrites;
+  }
+
+  function saveConfig(immediate = false) {
+    clearTimeout(saveTimer);
+    if (!saved || disposed) return;
+    if (immediate) return writeStorage(saved, true);
+    saveTimer = setTimeout(() => { if (saved) writeStorage(saved); }, 100);
+  }
+
+  // Only restore properties still owned by the dock. A native update made
+  // while docking becomes the new baseline rather than being erased by Reset.
+  function styleLease(element) {
+    const entries = new Map();
+    const hadStyle = element.hasAttribute('style');
+    const originalStyle = element.getAttribute('style');
+    const originalDeclaration = document.createElement('span').style;
+    originalDeclaration.cssText = originalStyle || '';
+    let originalPopover = element.getAttribute('popover');
+    let appliedPopover = originalPopover;
     return {
-      selector: value.selector,
-      x: clamp(finite(value.x, 60), -10000, 10000),
-      y: clamp(finite(value.y, 60), -10000, 10000),
-      width: clamp(finite(value.width, 120), 16, 5000),
-      height: clamp(finite(value.height, 120), 16, 5000),
-      scale: clamp(finite(value.scale, 1), MIN_SCALE, MAX_SCALE),
-      locked: !!value.locked
+      entries,
+      originalPopover,
+      hadStyle,
+      setPopover() {
+        const current = element.getAttribute('popover');
+        if (current !== appliedPopover) originalPopover = current;
+        if (current !== 'manual') element.setAttribute('popover', 'manual');
+        appliedPopover = 'manual';
+      },
+      set(property, value) {
+        const before = element.style.getPropertyValue(property);
+        const priority = element.style.getPropertyPriority(property);
+        let entry = entries.get(property);
+        if (!entry) entry = { value: before, priority };
+        else if (before !== entry.applied || priority !== 'important') {
+          entry.value = before;
+          entry.priority = priority;
+        }
+        const next = String(value);
+        if (before !== next || priority !== 'important') element.style.setProperty(property, next, 'important');
+        entry.applied = element.style.getPropertyValue(property);
+        entries.set(property, entry);
+      },
+      restore(node = element) {
+        try { if (node.matches(':popover-open')) node.hidePopover(); } catch (_) { /* unmounted */ }
+        if (node.getAttribute('popover') === appliedPopover) {
+          if (originalPopover === null) node.removeAttribute('popover');
+          else node.setAttribute('popover', originalPopover);
+        }
+        for (const [property, entry] of entries) {
+          if (node.style.getPropertyValue(property) !== entry.applied ||
+              node.style.getPropertyPriority(property) !== 'important') continue;
+          if (entry.value) node.style.setProperty(property, entry.value, entry.priority);
+          else node.style.removeProperty(property);
+        }
+        node.removeAttribute('data-dot-pet-dock-target');
+        const unchanged = node.style.length === originalDeclaration.length && [...originalDeclaration].every(property =>
+          node.style.getPropertyValue(property) === originalDeclaration.getPropertyValue(property) &&
+          node.style.getPropertyPriority(property) === originalDeclaration.getPropertyPriority(property));
+        if (unchanged && hadStyle) node.setAttribute('style', originalStyle);
+        else if (!hadStyle && !node.getAttribute('style')) node.removeAttribute('style');
+      }
     };
   }
 
-  function saveConfig() {
-    if (!currentKey || !saved) return;
-    chrome.storage.local.set({ [currentKey]: { ...saved } });
-  }
-
-  function backupInline(element) {
-    const snapshot = {};
-    for (const property of STYLE_PROPS) {
-      const value = element.style.getPropertyValue(property);
-      snapshot[property] = {
-        value: value === '' ? null : value,
-        priority: element.style.getPropertyPriority(property)
-      };
-    }
-    return snapshot;
-  }
+  let natural = null;
+  const resizeObserver = new ResizeObserver(() => {
+    if (target && !gesture) queueFrame();
+  });
+  const targetObserver = new MutationObserver(() => {
+    if (!target?.isConnected || !saved || !lease) return;
+    // Observe the selected node only. Disconnect around owned writes to avoid
+    // feedback loops; animated descendants never trigger this observer.
+    const changed = [...lease.entries].some(([property, entry]) =>
+      target.style.getPropertyValue(property) !== entry.applied || target.style.getPropertyPriority(property) !== 'important');
+    if (changed || target.getAttribute('popover') !== 'manual') placeTarget();
+    else queueFrame();
+  });
 
   function restoreTarget() {
-    if (target && originalStyles) {
-      for (const [property, entry] of Object.entries(originalStyles)) {
-        if (entry.value === null) target.style.removeProperty(property);
-        else target.style.setProperty(property, entry.value, entry.priority);
-      }
-      target.removeAttribute('data-dot-pet-dock-target');
+    endGesture();
+    targetObserver.disconnect();
+    resizeObserver.disconnect();
+    cancelAnimationFrame(frameRequest);
+    frameRequest = 0;
+    if (lease) {
+      previousLease = lease;
+      lease.restore();
     }
+    placeholder?.remove();
+    placeholder = null;
+    if (presentationRoot && presentationSheet) {
+      presentationRoot.adoptedStyleSheets = presentationRoot.adoptedStyleSheets.filter(sheet => sheet !== presentationSheet);
+    }
+    presentationRoot = null; presentationSheet = null;
     target = null;
-    originalStyles = null;
+    lease = null;
+    natural = null;
     frame.style.display = 'none';
   }
 
-  function important(property, value) {
-    target.style.setProperty(property, String(value), 'important');
+  function bounds(rect, x = saved.x, y = saved.y) {
+    const margin = 8;
+    const maxX = innerWidth - rect.width - margin;
+    const maxY = innerHeight - rect.height - margin;
+    return {
+      x: clamp(x, Math.min(margin, maxX), Math.max(margin, maxX)),
+      y: clamp(y, Math.min(margin, maxY), Math.max(margin, maxY))
+    };
   }
 
   function placeTarget() {
-    if (!target?.isConnected || !saved) return;
-
-    important('position', 'fixed');
-    important('right', 'auto');
-    important('bottom', 'auto');
-    important('margin', '0px');
-    important('min-width', '0px');
-    important('min-height', '0px');
-    important('max-width', 'none');
-    important('max-height', 'none');
-    important('width', `${saved.width}px`);
-    important('height', `${saved.height}px`);
-    important('z-index', '2147483640');
-    // Individual CSS scale preserves the site's animated `transform` property.
-    important('scale', `${saved.scale}`);
-    let left = saved.x;
-    let top = saved.y;
-    important('left', `${left}px`);
-    important('top', `${top}px`);
-
-    // Compensate for any existing transforms, margins, or fixed-position
-    // containing blocks to anchor the pet's *visible* upper-left corner.
-    for (let i = 0; i < 3; i++) {
-      const rect = target.getBoundingClientRect();
-      const dx = saved.x - rect.left;
-      const dy = saved.y - rect.top;
-      if (Math.max(Math.abs(dx), Math.abs(dy)) < 0.5) break;
-      left += dx;
-      top += dy;
-      important('left', `${left}px`);
-      important('top', `${top}px`);
+    if (!target?.isConnected || !saved || !lease || !natural) return;
+    targetObserver.disconnect();
+    const set = (property, value) => lease.set(property, value);
+    set('--dot-pet-dock-owned', '1');
+    set('--dot-pet-dock-scale', saved.scale);
+    set('position', 'fixed');
+    set('right', 'auto'); set('bottom', 'auto');
+    set('margin-top', '0px'); set('margin-right', '0px');
+    set('margin-bottom', '0px'); set('margin-left', '0px');
+    set('width', natural.width);
+    set('height', natural.nametagHeight
+      ? `${parseFloat(natural.height) - natural.nametagHeight + natural.nametagHeight / saved.scale}px`
+      : natural.height);
+    set('min-width', '0px'); set('min-height', '0px');
+    set('max-width', 'none'); set('max-height', 'none');
+    set('box-sizing', natural.boxSizing);
+    // zoom composes with the site's transform AND individual scale/translate/
+    // rotate. SVG is rerasterized by Chrome; canvas backing pixels are untouched.
+    const zoom = natural.zoom * saved.scale;
+    set('zoom', zoom);
+    let left = saved.x / zoom;
+    let top = saved.y / zoom;
+    set('left', `${left}px`); set('top', `${top}px`);
+    lease.setPopover();
+    try { if (!target.matches(':popover-open')) target.showPopover(); }
+    catch (_) {
+      restoreTarget();
+      toast('This display cannot enter the top layer. Pick a small enclosing pet frame.');
+      return;
     }
+    // A top-layer element's containing block is the viewport. Account for its
+    // native transform/origin and preexisting zoom without replacing animation.
+    let rect = target.getBoundingClientRect();
+    const pos = bounds(rect);
+    saved.x = pos.x; saved.y = pos.y;
+    for (let i = 0; i < 2; i++) {
+      left += (saved.x - rect.left) / zoom;
+      top += (saved.y - rect.top) / zoom;
+      set('left', `${left}px`); set('top', `${top}px`);
+      rect = target.getBoundingClientRect();
+    }
+    targetObserver.observe(target, { attributes: true, attributeFilter: ['style', 'popover'] });
     renderFrame();
   }
 
+  function attach(element, config) {
+    const originalRect = element.getBoundingClientRect();
+    const requestedPosition = { x: config.x, y: config.y };
+    const cs = getComputedStyle(element);
+    const appearance = {};
+    for (const property of ['background-color', 'color', 'overflow-x', 'overflow-y',
+      'padding-top', 'padding-right', 'padding-bottom', 'padding-left',
+      ...['top', 'right', 'bottom', 'left'].flatMap(side => [`border-${side}-width`, `border-${side}-style`, `border-${side}-color`])]) {
+      appearance[property] = cs.getPropertyValue(property);
+    }
+    const nametagSelector = ':scope > div.pointer-events-none > div.relative.isolate';
+    const nametag = targeting.dotsAvatar(element) ? element.querySelector(nametagSelector) : null;
+    const originalNametagHeight = nametag?.getBoundingClientRect().height || 0;
+    const base = { width: cs.width, height: cs.height, display: cs.display, boxSizing: cs.boxSizing,
+      zoom: parseFloat(cs.zoom) || 1, appearance,
+      nametagHeight: originalNametagHeight * parseFloat(cs.height) / originalRect.height };
+    // Low-specificity author defaults neutralize the popover UA appearance.
+    // Native classes/inline styles continue to win, including later theme or
+    // animation state changes. Never freeze live appearance with !important.
+    presentationRoot = element.getRootNode();
+    presentationSheet = new CSSStyleSheet();
+    presentationSheet.replaceSync(`:where([data-dot-pet-dock-target]) {
+      ${Object.entries(appearance).filter(([property]) => property !== 'color').map(([property, value]) => `${property}:${value};`).join('')}
+      color:inherit; display:${base.display};
+    }
+    [data-dot-pet-dock-target]::backdrop { background:transparent !important; pointer-events:none !important; }
+    ${nametag ? `:where([data-dot-pet-dock-target] > div.pointer-events-none > div.relative.isolate) {
+      zoom:calc(1 / var(--dot-pet-dock-scale, 1));
+      width:max-content; max-width:${base.width} !important; flex-shrink:0;
+    }` : ''}`);
+    presentationRoot.adoptedStyleSheets = [...presentationRoot.adoptedStyleSheets, presentationSheet];
+    if (!['fixed', 'absolute'].includes(cs.position)) {
+      // Reserve the original flow slot without moving or cloning the pet.
+      placeholder = document.createElement('span');
+      placeholder.setAttribute('data-dot-pet-dock-placeholder', '');
+      placeholder.setAttribute('aria-hidden', 'true');
+      placeholder.inert = true;
+      const style = placeholder.style;
+      style.setProperty('display', cs.display === 'inline' ? 'inline-block' : cs.display, 'important');
+      style.setProperty('box-sizing', 'border-box', 'important');
+      style.setProperty('width', `${element.offsetWidth}px`, 'important');
+      style.setProperty('height', `${element.offsetHeight}px`, 'important');
+      style.setProperty('visibility', 'hidden', 'important');
+      style.setProperty('pointer-events', 'none', 'important');
+      for (const property of ['margin-top', 'margin-right', 'margin-bottom', 'margin-left',
+        'flex-grow', 'flex-shrink', 'flex-basis', 'align-self', 'order', 'grid-area']) {
+        style.setProperty(property, cs.getPropertyValue(property), 'important');
+      }
+      element.before(placeholder);
+    }
+    target = element;
+    saved = config;
+    natural = base;
+    lease = styleLease(target);
+    target.setAttribute('data-dot-pet-dock-target', '');
+    placeTarget();
+    if (target) {
+      const promoted = target.getBoundingClientRect();
+      const desiredHeight = (originalRect.height - originalNametagHeight) * saved.scale + originalNametagHeight;
+      const correction = Math.min(originalRect.width * saved.scale / promoted.width,
+        desiredHeight / promoted.height);
+      if (Number.isFinite(correction) && correction > 0 && Math.abs(correction - 1) > .001) {
+        natural.zoom *= correction;
+        saved.x = requestedPosition.x; saved.y = requestedPosition.y;
+        placeTarget();
+      }
+    }
+    if (target) resizeObserver.observe(target);
+    queueFrame();
+  }
+
   function renderFrame() {
-    if (!target?.isConnected || !saved || saved.locked || picking) {
+    if (!target?.isConnected || !saved || saved.locked || picking || document.hidden) {
       frame.style.display = 'none';
+      if (!picking && instruction.style.display !== 'block' && host.matches(':popover-open')) host.hidePopover();
       return;
     }
     const rect = target.getBoundingClientRect();
-    if (!rect.width || !rect.height) {
-      frame.style.display = 'none';
-      return;
-    }
+    if (!rect.width || !rect.height) { frame.style.display = 'none'; return; }
+    showHost();
     frame.style.display = 'block';
-    frame.style.left = `${rect.left}px`;
-    frame.style.top = `${rect.top}px`;
-    frame.style.width = `${rect.width}px`;
-    frame.style.height = `${rect.height}px`;
-    frame.classList.toggle('below', rect.top < 40);
+    frame.style.left = `${rect.left}px`; frame.style.top = `${rect.top}px`;
+    frame.style.width = `${rect.width}px`; frame.style.height = `${rect.height}px`;
+    const toolbar = $('toolbar');
+    // Toolbar and resize handle are independently clamped, even for a pet that
+    // is larger than the viewport. Native pet pointer events stay unobstructed.
+    toolbar.style.position = 'fixed';
+    toolbar.style.left = `${clamp(rect.left, 8, Math.max(8, innerWidth - toolbar.offsetWidth - 8))}px`;
+    toolbar.style.top = `${clamp(rect.top - 35, 8, Math.max(8, innerHeight - 38))}px`;
+    resizeHandle.style.position = 'fixed';
+    resizeHandle.style.left = `${clamp(rect.right - 9, 8, Math.max(8, innerWidth - 26))}px`;
+    resizeHandle.style.top = `${clamp(rect.bottom - 9, 45, Math.max(45, innerHeight - 26))}px`;
     scaleReadout.textContent = `${Math.round(saved.scale * 100)}%`;
+    scaleReadout.style.position = 'fixed';
+    scaleReadout.style.left = `${clamp(rect.right - 52, 8, Math.max(8, innerWidth - 60))}px`;
+    scaleReadout.style.top = `${clamp(rect.bottom + 10, 8, Math.max(8, innerHeight - 28))}px`;
+    scaleReadout.style.right = 'auto'; scaleReadout.style.bottom = 'auto';
     const parent = target.parentElement;
-    parentButton.style.display = parent && parent !== document.body &&
-      parent !== document.documentElement && parent !== host ? '' : 'none';
+    parentButton.disabled = !parent || parent === document.body || parent === document.documentElement ||
+      parent.matches('main,aside,nav,article,form,[role="main"],[role="navigation"]');
   }
 
-  function isOurElement(el) {
-    return !el || el === host || el === document.body ||
-      el === document.documentElement || host.contains(el);
+  function queueFrame() {
+    if (frameRequest || disposed || document.hidden || saved?.locked || !target) return;
+    frameRequest = requestAnimationFrame(() => {
+      frameRequest = 0;
+      renderFrame();
+      // Only editing tracks animation geometry. A locked pet does no frame work.
+      if (target?.isConnected && !saved?.locked && !picking) queueFrame();
+    });
   }
 
-  function normalizeCandidate(el) {
-    if (!el || !(el instanceof Element) || isOurElement(el)) return null;
-    // A click on an SVG path should select the whole drawing, not one limb.
-    const svg = el.closest('svg');
-    if (svg && !isOurElement(svg)) return svg;
-    for (let cur = el, hops = 0; cur && hops < 5; cur = cur.parentElement, hops++) {
-      if (isOurElement(cur)) break;
-      const bounds = cur.getBoundingClientRect();
-      if (bounds.width >= 24 && bounds.height >= 24) return cur;
-    }
-    return el;
+  function selectElement(element, position = null) {
+    if (element && element === target) { toggleLock(false); return true; }
+    if (!targeting.safe(element)) return false;
+    restoreTarget();
+    const identity = targeting.identify(element);
+    const rect = element.getBoundingClientRect();
+    enabled = true;
+    notice = '';
+    attach(element, { identity, x: position?.x ?? rect.left, y: position?.y ?? rect.top,
+      scale: position?.scale ?? 1, locked: false });
+    saveConfig(true);
+    return !!target;
   }
 
   function beneathPicker(x, y) {
-    for (const element of document.elementsFromPoint(x, y)) {
-      if (isOurElement(element)) continue;
-      return normalizeCandidate(element);
+    for (let element of document.elementsFromPoint(x, y)) {
+      if (element === host || element === document.body || element === document.documentElement) continue;
+      // Hit-test through accessible shadow roots without reading their content.
+      while (element.shadowRoot) {
+        const child = element.shadowRoot.elementFromPoint(x, y);
+        if (!child || child === element) break;
+        element = child;
+      }
+      if (target && (element === target || target.contains(element))) return target;
+      return targeting.normalize(element);
     }
     return null;
   }
 
-  function showHover(el) {
-    highlighted = el;
-    if (!el) { hover.style.display = 'none'; return; }
-    const rect = el.getBoundingClientRect();
-    if (!rect.width || !rect.height) { hover.style.display = 'none'; return; }
-    hover.style.display = 'block';
-    hover.style.left = `${rect.left}px`;
-    hover.style.top = `${rect.top}px`;
-    hover.style.width = `${rect.width}px`;
-    hover.style.height = `${rect.height}px`;
+  function showHover(element) {
+    if (!element) { hover.style.display = 'none'; return; }
+    const rect = element.getBoundingClientRect();
+    hover.style.display = 'block'; hover.style.left = `${rect.left}px`; hover.style.top = `${rect.top}px`;
+    hover.style.width = `${rect.width}px`; hover.style.height = `${rect.height}px`;
   }
 
   function startPicking() {
-    if (picking) return;
-    picking = true;
-    candidateOnDown = null;
-    showHover(null);
-    picker.style.display = 'block';
-    instruction.style.display = 'block';
-    frame.style.display = 'none';
+    if (!initialized) { void ready.then(startPicking); return; }
+    endGesture();
+    picking = true; candidateOnDown = null; notice = '';
+    clearTimeout(toastTimer);
+    instruction.textContent = 'Click the pet or its small visual frame. Esc cancels.';
+    picker.style.display = 'block'; instruction.style.display = 'block';
+    frame.style.display = 'none'; showHost();
   }
 
   function stopPicking() {
-    picking = false;
-    highlighted = null;
-    candidateOnDown = null;
-    picker.style.display = 'none';
-    hover.style.display = 'none';
-    instruction.style.display = 'none';
-    renderFrame();
+    picking = false; candidateOnDown = null;
+    picker.style.display = 'none'; hover.style.display = 'none'; instruction.style.display = 'none';
+    renderFrame(); queueFrame();
   }
 
-  function cssSelector(el) {
-    const parts = [];
-    for (let cur = el, depth = 0;
-      cur && cur !== document.documentElement && depth < 35;
-      cur = cur.parentElement, depth++) {
-      let piece = cur.localName;
-      // Use an unambiguous ID when available; otherwise capture the hierarchy.
-      if (cur.id && !/^radix-|^headlessui-/i.test(cur.id) &&
-          document.querySelectorAll(`#${CSS.escape(cur.id)}`).length === 1) {
-        parts.unshift(`#${CSS.escape(cur.id)}`);
-        break;
-      }
-      if (cur.getAttribute('data-testid')) {
-        const id = cur.getAttribute('data-testid');
-        const byTestId = `[data-testid="${CSS.escape(id)}"]`;
-        if (document.querySelectorAll(byTestId).length === 1) {
-          parts.unshift(byTestId);
-          break;
-        }
-      }
-      if (cur.parentElement) {
-        const siblings = Array.from(cur.parentElement.children)
-          .filter((sibling) => sibling.localName === cur.localName);
-        if (siblings.length > 1) piece += `:nth-of-type(${siblings.indexOf(cur) + 1})`;
-      }
-      parts.unshift(piece);
+  let searchRoots = [document];
+  let discoverRoots = false;
+  const treeObserver = new MutationObserver(records => {
+    if (disposed) return;
+    if (location.pathname !== route) { route = location.pathname; stopPicking(); }
+    // Child-list changes only; ignore our controls and all animation attributes.
+    if (records.every(record => record.target === host || host.contains(record.target))) return;
+    if (target?.isConnected && placeholder && (!placeholder.isConnected || placeholder.parentNode !== target.parentNode)) {
+      target.before(placeholder);
     }
-    return parts.join(' > ');
-  }
+    if (!target?.isConnected && records.some(record => [...record.addedNodes].some(node =>
+      node instanceof Element && (node.shadowRoot || [...node.querySelectorAll('*')].some(child => child.shadowRoot))))) discoverRoots = true;
+    if (target && !target.isConnected) queueReconnect();
+    else if (!target && saved) queueReconnect();
+    else if (!target && enabled && records.some(record => [...record.addedNodes].some(node =>
+      node instanceof Element && (node.matches(targeting.HINTS) || node.querySelector(targeting.HINTS) || node.shadowRoot)))) queueReconnect();
+  });
 
-  function selectElement(element) {
-    if (!element || isOurElement(element)) return false;
-    const rect = element.getBoundingClientRect();
-    if (rect.width < 16 || rect.height < 16) return false;
-
-    restoreTarget();
-    target = element;
-    originalStyles = backupInline(target);
-    target.setAttribute('data-dot-pet-dock-target', '');
-    saved = {
-      selector: cssSelector(target),
-      x: rect.left,
-      y: rect.top,
-      width: clamp(target.offsetWidth || rect.width, 16, 5000),
-      height: clamp(target.offsetHeight || rect.height, 16, 5000),
-      scale: 1,
-      locked: false
-    };
-    placeTarget();
-    saveConfig();
-    return true;
+  function watchRoots() {
+    // Drop observations of removed shadow trees instead of retaining every
+    // renderer encountered during a long SPA session.
+    treeObserver.disconnect();
+    searchRoots = targeting.roots();
+    discoverRoots = false;
+    for (const root of searchRoots) {
+      treeObserver.observe(root === document ? document.documentElement : root, { childList: true, subtree: true });
+    }
   }
 
   function reconnect() {
-    reconnectQueued = false;
-    if (!saved || target?.isConnected) return;
-    let found = null;
-    try { found = document.querySelector(saved.selector); } catch (_) { /* stale selector */ }
-    if (!found || isOurElement(found)) return;
-    const rect = found.getBoundingClientRect();
-    if (rect.width < 4 || rect.height < 4) return;
-    // Some UI frameworks clone a DOM node, including our injected inline CSS.
-    // In that case retain its predecessor's *real* original style for Reset.
-    const inheritedDockStyle = found.hasAttribute('data-dot-pet-dock-target') ||
-      (found.style.getPropertyValue('position') === 'fixed' &&
-       found.style.getPropertyValue('z-index') === '2147483640');
-    const previousOriginal = originalStyles;
-    restoreTarget();
-    target = found;
-    originalStyles = inheritedDockStyle && previousOriginal
-      ? previousOriginal : backupInline(found);
-    target.setAttribute('data-dot-pet-dock-target', '');
-    placeTarget();
+    reconnectTimer = 0;
+    if (!initialized || disposed || document.hidden) return;
+    if (target?.isConnected) return;
+    if (target) { restoreTarget(); discoverRoots = true; }
+    if (discoverRoots) watchRoots();
+    // A framework may clone inline styles. Remove our inherited presentation
+    // before measuring/validating the replacement, retaining the real baseline.
+    if (previousLease) {
+      for (const root of searchRoots) {
+        for (const clone of root.querySelectorAll('[data-dot-pet-dock-placeholder]')) clone.remove();
+        for (const clone of root.querySelectorAll('[data-dot-pet-dock-target],[style*="--dot-pet-dock-owned"]')) {
+          if (clone.hasAttribute('data-dot-pet-dock-target') || clone.style.getPropertyValue('--dot-pet-dock-owned') === '1') previousLease.restore(clone);
+        }
+      }
+    }
+    if (saved) {
+      let found = targeting.resolve(saved.identity);
+      if (!found && Array.isArray(saved.identity?.paths) && saved.identity.paths.length && Array.isArray(saved.identity.media)) {
+        const automatic = targeting.automatic(searchRoots);
+        if (automatic && targeting.matchesIdentity(automatic, saved.identity)) {
+          found = automatic;
+          saved.identity = targeting.identify(found);
+          saveConfig();
+        }
+      }
+      if (found) attach(found, saved);
+    } else if (enabled) {
+      const found = targeting.automatic(searchRoots);
+      if (found) selectElement(found);
+    }
   }
 
   function queueReconnect() {
-    if (reconnectQueued) return;
-    reconnectQueued = true;
-    setTimeout(reconnect, 120);
-  }
-
-  async function loadRoute() {
-    const epoch = ++routeEpoch;
-    const key = storageKey();
-    currentKey = key;
-    saved = null;
-    let value;
-    try { value = (await chrome.storage.local.get(key))[key]; }
-    catch (_) { value = null; }
-    if (epoch !== routeEpoch || key !== storageKey()) return;
-    saved = validSaved(value);
-    queueReconnect();
-  }
-
-  function handleRouteChange() {
-    if (storageKey() === currentKey) return;
-    stopPicking();
-    restoreTarget();
-    loadRoute();
+    if (!reconnectTimer && !disposed) reconnectTimer = setTimeout(reconnect, 80);
   }
 
   function reset() {
-    stopPicking();
-    restoreTarget();
-    saved = null;
-    if (currentKey) chrome.storage.local.remove(currentKey);
-  }
-
-  function toggleLock(lockValue) {
-    if (!saved) return;
-    saved.locked = typeof lockValue === 'boolean' ? lockValue : !saved.locked;
-    saveConfig();
-    renderFrame();
+    clearTimeout(saveTimer); clearTimeout(toastTimer); clearTimeout(reconnectTimer); reconnectTimer = 0;
+    stopPicking(); restoreTarget(); saved = null; enabled = false; notice = '';
+    instruction.style.display = 'none';
+    if (host.matches(':popover-open')) host.hidePopover();
+    return writeStorage({ disabled: true }, true);
   }
 
   function setScale(value) {
     if (!saved) return;
-    saved.scale = clamp(finite(value, 1), MIN_SCALE, MAX_SCALE);
-    placeTarget();
-    saveConfig();
+    saved.scale = clamp(finite(value, saved.scale), .5, 5);
+    notice = ''; placeTarget(); saveConfig();
   }
 
-  function boundPosition(x, y, scale = saved?.scale ?? 1) {
-    if (!saved) return { x, y };
-    const width = saved.width * scale;
-    const height = saved.height * scale;
-    const margin = 40; // Always leave at least a grab-sized piece on screen.
-    return {
-      x: clamp(x, margin - width, window.innerWidth - margin),
-      y: clamp(y, margin - height, window.innerHeight - margin)
-    };
+  function toggleLock(locked) {
+    if (!saved) return;
+    endGesture(); saved.locked = !!locked;
+    if (locked) { cancelAnimationFrame(frameRequest); frameRequest = 0; }
+    renderFrame(); queueFrame(); saveConfig(true);
   }
-
-  picker.addEventListener('pointermove', (event) => {
-    if (!picking) return;
-    showHover(beneathPicker(event.clientX, event.clientY));
-  });
-  picker.addEventListener('pointerdown', (event) => {
-    if (event.button !== 0) return;
-    event.preventDefault();
-    event.stopPropagation();
-    candidateOnDown = beneathPicker(event.clientX, event.clientY);
-  });
-  picker.addEventListener('click', (event) => {
-    event.preventDefault();
-    event.stopPropagation();
-    if (!picking) return;
-    // Prefer the element from pointerdown so moving the mouse doesn't retarget.
-    const chosen = candidateOnDown || beneathPicker(event.clientX, event.clientY);
-    if (chosen && selectElement(chosen)) stopPicking();
-    candidateOnDown = null;
-  });
-  picker.addEventListener('contextmenu', (event) => event.preventDefault());
 
   function gestureStart(event, mode) {
     if (!saved || !target || saved.locked || event.button !== 0) return;
-    event.preventDefault();
-    event.stopPropagation();
+    event.preventDefault(); event.stopPropagation();
     const rect = target.getBoundingClientRect();
-    gesture = {
-      mode,
-      pointerId: event.pointerId,
-      startX: event.clientX,
-      startY: event.clientY,
-      x: saved.x,
-      y: saved.y,
-      scale: saved.scale,
-      width: Math.max(1, rect.width),
-      height: Math.max(1, rect.height)
-    };
+    gesture = { mode, pointerId: event.pointerId, handle: event.currentTarget,
+      startX: event.clientX, startY: event.clientY, x: saved.x, y: saved.y,
+      scale: saved.scale, width: rect.width, height: rect.height };
     event.currentTarget.setPointerCapture(event.pointerId);
+    picker.style.cursor = mode === 'move' ? 'grabbing' : 'nwse-resize';
+    picker.style.display = 'block';
+    showHost();
   }
 
-  moveHandle.addEventListener('pointerdown', (event) => gestureStart(event, 'move'));
-  resizeHandle.addEventListener('pointerdown', (event) => gestureStart(event, 'resize'));
+  function endGesture() {
+    if (!gesture) return;
+    const ending = gesture; gesture = null;
+    try { ending.handle.releasePointerCapture(ending.pointerId); } catch (_) { /* canceled */ }
+    picker.style.cursor = 'crosshair'; picker.style.display = picking ? 'block' : 'none';
+    saveConfig(true);
+  }
 
   function gestureMove(event) {
-    if (!gesture || event.pointerId !== gesture.pointerId || !saved) return;
-    event.preventDefault();
-    const dx = event.clientX - gesture.startX;
-    const dy = event.clientY - gesture.startY;
-    if (gesture.mode === 'move') {
-      const pos = boundPosition(gesture.x + dx, gesture.y + dy);
-      saved.x = pos.x;
-      saved.y = pos.y;
-    } else {
-      const fractionalDelta = Math.abs(dx) > Math.abs(dy)
-        ? dx / gesture.width : dy / gesture.height;
-      saved.scale = clamp(gesture.scale * (1 + fractionalDelta), MIN_SCALE, MAX_SCALE);
-    }
-    placeTarget();
+      if (!gesture || event.pointerId !== gesture.pointerId || !saved) return;
+      event.preventDefault(); event.stopPropagation();
+      const dx = event.clientX - gesture.startX, dy = event.clientY - gesture.startY;
+      if (gesture.mode === 'move') { saved.x = gesture.x + dx; saved.y = gesture.y + dy; }
+      else {
+        const delta = Math.abs(dx) > Math.abs(dy) ? dx / gesture.width : dy / gesture.height;
+        saved.scale = clamp(gesture.scale * (1 + delta), .5, 5);
+      }
+      placeTarget();
   }
 
-  function gestureEnd(event) {
-    if (!gesture || event.pointerId !== gesture.pointerId) return;
-    gesture = null;
-    saveConfig();
+  for (const [handle, mode] of [[moveHandle, 'move'], [resizeHandle, 'resize']]) {
+    listen(handle, 'pointerdown', event => gestureStart(event, mode));
+    listen(handle, 'pointermove', gestureMove);
+    for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) listen(handle, type, endGesture);
+    listen(handle, 'click', event => { event.preventDefault(); event.stopPropagation(); });
   }
 
-  for (const handle of [moveHandle, resizeHandle]) {
-    handle.addEventListener('pointermove', gestureMove);
-    handle.addEventListener('pointerup', gestureEnd);
-    handle.addEventListener('pointercancel', gestureEnd);
-  }
-
-  // Keyboard accessibility for resizing, one 10% step per arrow key.
-  resizeHandle.addEventListener('keydown', (event) => {
+  listen(resizeHandle, 'keydown', event => {
     if (!saved || !['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(event.key)) return;
-    event.preventDefault();
-    const positive = ['ArrowUp', 'ArrowRight'].includes(event.key);
-    setScale(saved.scale + (positive ? 0.1 : -0.1));
+    event.preventDefault(); event.stopPropagation();
+    setScale(saved.scale + (['ArrowUp', 'ArrowRight'].includes(event.key) ? .1 : -.1));
+  });
+  listen(moveHandle, 'keydown', event => {
+    const delta = { ArrowLeft: [-10, 0], ArrowRight: [10, 0], ArrowUp: [0, -10], ArrowDown: [0, 10] }[event.key];
+    if (!saved || !delta) return;
+    event.preventDefault(); event.stopPropagation();
+    saved.x += delta[0]; saved.y += delta[1]; placeTarget(); saveConfig();
   });
 
-  parentButton.addEventListener('click', () => {
-    const parent = target?.parentElement;
-    if (!parent || isOurElement(parent)) return;
-    const bounds = parent.getBoundingClientRect();
-    // Avoid accidentally floating the entire conversation or sidebar.
-    if (bounds.width > window.innerWidth * 0.9 ||
-        bounds.height > window.innerHeight * 0.9) return;
+  listen(parentButton, 'click', () => {
+    const old = target, config = saved, parent = target?.parentElement;
+    if (!old || !parent) return;
     restoreTarget();
-    selectElement(parent);
+    if (!selectElement(parent, config)) {
+      attach(old, config);
+      toast('That parent includes page UI or is too large. Pick the small pet frame.');
+    }
   });
-  lockButton.addEventListener('click', () => toggleLock(true));
-  resetButton.addEventListener('click', reset);
+  listen($('lock'), 'click', () => toggleLock(true));
+  listen($('reset'), 'click', reset);
 
-  window.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape' && picking) {
-      event.preventDefault();
-      stopPicking();
+  listen(picker, 'pointermove', event => { if (picking) showHover(beneathPicker(event.clientX, event.clientY)); });
+  listen(picker, 'pointerdown', event => {
+    event.preventDefault(); event.stopPropagation();
+    if (picking && event.button === 0) candidateOnDown = beneathPicker(event.clientX, event.clientY);
+  });
+  listen(picker, 'click', event => {
+    event.preventDefault(); event.stopPropagation();
+    if (!picking) return;
+    const chosen = candidateOnDown || beneathPicker(event.clientX, event.clientY);
+    if (chosen && selectElement(chosen)) stopPicking();
+    else { instruction.textContent = 'Choose just the pet artwork or its small frame. Esc cancels.'; }
+    candidateOnDown = null;
+  });
+  listen(picker, 'contextmenu', event => event.preventDefault());
+  // Capture picker/gesture events at window so underlying delegated React
+  // handlers never receive them, including wheel/trackpad scroll during picking.
+  for (const type of ['pointerdown', 'pointermove', 'pointerup', 'pointercancel',
+    'mousedown', 'mousemove', 'mouseup', 'click', 'dblclick', 'contextmenu', 'wheel']) {
+    listen(window, type, event => {
+      if ((!picking && !gesture) || !event.composedPath().includes(host)) return;
+      event.preventDefault(); event.stopImmediatePropagation();
+      if (gesture) {
+        if (type === 'pointermove') gestureMove(event);
+        if (type === 'pointerup' || type === 'pointercancel') endGesture();
+      } else if (picking) {
+        if (type === 'pointermove') showHover(beneathPicker(event.clientX, event.clientY));
+        if (type === 'pointerdown' && event.button === 0) candidateOnDown = beneathPicker(event.clientX, event.clientY);
+        if (type === 'click') {
+          const chosen = candidateOnDown || beneathPicker(event.clientX, event.clientY);
+          if (chosen && selectElement(chosen)) stopPicking();
+          else instruction.textContent = 'Choose just the pet artwork or its small frame. Esc cancels.';
+          candidateOnDown = null;
+        }
+      }
+    }, { capture: true, passive: false });
+  }
+
+  listen(window, 'keydown', event => {
+    if (event.key === 'Escape' && (picking || gesture)) {
+      event.preventDefault(); event.stopImmediatePropagation(); endGesture(); stopPicking();
     }
     if (event.altKey && event.shiftKey && event.code === 'KeyP') {
-      event.preventDefault();
+      event.preventDefault(); event.stopImmediatePropagation();
       if (picking) stopPicking(); else startPicking();
     }
-  }, true);
-
-  window.addEventListener('resize', renderFrame);
-  window.addEventListener('scroll', renderFrame, true);
-  new MutationObserver(() => {
-    handleRouteChange();
-    if (saved && !target?.isConnected) queueReconnect();
-    // The app may have changed the inline style during a React update.
-    if (target?.isConnected && target.style.getPropertyValue('position') !== 'fixed') {
-      placeTarget();
-    }
-  }).observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['style'] });
-
-  setInterval(() => {
-    handleRouteChange();
-    if (saved && !target?.isConnected) queueReconnect();
-    if (target && !picking) renderFrame();
-  }, 400);
-
-  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-    if (message?.namespace !== MESSAGE_NAMESPACE) return;
-    handleRouteChange();
-    switch (message.action) {
-      case 'STATE': break;
-      case 'PICK': startPicking(); break;
-      case 'LOCK': toggleLock(!!message.locked); break;
-      case 'SET_SCALE': setScale(message.scale); break;
-      case 'RESET': reset(); break;
-      default: sendResponse({ ok: false, error: 'Unknown action' }); return;
-    }
-    sendResponse({
-      ok: true,
-      selected: !!target?.isConnected,
-      saved: !!saved,
-      locked: !!saved?.locked,
-      scale: saved?.scale ?? 1,
-      picking
-    });
+  }, { capture: true });
+  listen(window, 'blur', endGesture);
+  listen(window, 'resize', () => { placeTarget(); if (saved) saveConfig(); });
+  listen(document, 'visibilitychange', () => {
+    if (document.hidden) { endGesture(); cancelAnimationFrame(frameRequest); frameRequest = 0; }
+    else { queueReconnect(); placeTarget(); queueFrame(); }
   });
+  listen(window, 'popstate', () => { route = location.pathname; stopPicking(); queueReconnect(); });
+  listen(window, 'hashchange', () => { stopPicking(); queueReconnect(); });
+  if (window.navigation) listen(window.navigation, 'navigatesuccess', () => {
+    route = location.pathname; stopPicking(); queueReconnect();
+  });
+  listen(window, 'pagehide', () => {
+    if (saved) saveConfig(true);
+    restoreTarget();
+    if (host.matches(':popover-open')) host.hidePopover();
+  });
+  listen(window, 'pageshow', queueReconnect);
 
-  loadRoute();
+  function dispose() {
+    if (disposed) return;
+    disposed = true;
+    restoreTarget(); events.abort(); treeObserver.disconnect();
+    clearTimeout(reconnectTimer); clearTimeout(saveTimer); clearTimeout(toastTimer); clearInterval(validityTimer);
+    document.adoptedStyleSheets = document.adoptedStyleSheets.filter(sheet => sheet !== backdropSheet);
+    host.remove();
+    try { chrome.runtime.onMessage.removeListener(onMessage); } catch (_) { /* invalidated */ }
+  }
+  // Chrome does not dispatch an unload event to existing content scripts when
+  // an extension is disabled/reloaded. A low-frequency validity check performs
+  // best-effort cleanup without polling layout or scanning the document.
+  const validityTimer = setInterval(() => {
+    try { if (!chrome.runtime.id) dispose(); else chrome.runtime.getManifest(); }
+    catch (_) { dispose(); }
+  }, 3000);
+
+  async function initialize() {
+    let value;
+    let migrated = false;
+    try {
+      const legacyKey = `dot-pet-dock:v1:${location.origin}${location.pathname}`;
+      const stored = await chrome.storage.local.get([KEY, legacyKey]);
+      value = stored[KEY];
+      // Migrate only a unique, safe legacy visual target on this route. Never
+      // replay an arbitrary old selector as permission to float page content.
+      if (!value && stored[legacyKey]?.selector) {
+        try {
+          const matches = document.querySelectorAll(stored[legacyKey].selector);
+          const found = matches.length === 1 && targeting.normalize(matches[0]);
+          if (found) { value = { ...stored[legacyKey], identity: targeting.identify(found) }; migrated = true; }
+        } catch (_) { /* invalid legacy selector */ }
+      }
+    } catch (_) { notice = 'Saved settings could not be loaded. You can still pick the pet.'; }
+    enabled = value?.disabled !== true;
+    if (value?.identity && typeof value.identity === 'object') {
+      saved = { identity: value.identity, x: finite(value.x, 60), y: finite(value.y, 60),
+        scale: clamp(finite(value.scale, 1), .5, 5), locked: !!value.locked };
+    }
+    if (migrated && saved) await writeStorage(saved);
+    watchRoots(); initialized = true; reconnect();
+  }
+  const ready = initialize();
+
+  function state() {
+    return { ok: true, selected: !!target?.isConnected, saved: !!saved, scale: saved?.scale ?? 1,
+      locked: !!saved?.locked, picking, notice };
+  }
+
+  function onMessage(message, _sender, sendResponse) {
+    if (message?.namespace !== MESSAGE_NAMESPACE || disposed) return;
+    void ready.then(async () => {
+      let error = '';
+      switch (message.action) {
+        case 'STATE': break;
+        case 'PICK': startPicking(); break;
+        case 'FIND': {
+          if (target?.isConnected) break;
+          const found = targeting.automatic();
+          if (!found) error = 'No unambiguous pet frame found. Use Pick pet on page.';
+          else if (saved) {
+            restoreTarget();
+            saved.identity = targeting.identify(found);
+            attach(found, saved); saveConfig(true);
+          } else if (!selectElement(found)) error = 'Pick a small pet frame on the page.';
+          break;
+        }
+        case 'SET_SCALE': setScale(message.scale); break;
+        case 'LOCK': toggleLock(message.locked); break;
+        case 'RESET': await reset(); break;
+        default: error = 'Unknown action.';
+      }
+      sendResponse({ ...state(), ok: !error, ...(error ? { error } : {}) });
+    }).catch(() => sendResponse({ ...state(), ok: false, error: 'The display changed. Reload ChatGPT and pick the pet again.' }));
+    return true;
+  }
+  chrome.runtime.onMessage.addListener(onMessage);
 })();
