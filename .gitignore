@@ -3,6 +3,7 @@ __pycache__/
 .pytest_cache/
 *.py[cod]
 .venv/
+output/
 
 # Local OS and editor files
 .DS_Store

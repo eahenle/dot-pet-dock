@@ -1,7 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Dot Pet Dock",
-  "version": "0.1.0",
+  "version": "0.2.0",
+  "minimum_chrome_version": "120",
   "description": "Give your ChatGPT Dot pet a draggable, resizable display on the web.",
   "permissions": ["storage", "activeTab"],
   "action": {
@@ -11,7 +12,7 @@
   "content_scripts": [
     {
       "matches": ["https://chatgpt.com/*"],
-      "js": ["content.js"],
+      "js": ["targeting.js", "content.js"],
       "run_at": "document_idle"
     }
   ],
