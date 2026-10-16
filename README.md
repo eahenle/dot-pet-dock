@@ -91,6 +91,8 @@ Screenshot: a local test fixture, not the authenticated ChatGPT interface.
 - SVG elements themselves cannot enter the popover top layer; selection promotes
   a small HTML parent. If no safe parent exists, selection is rejected. Existing
   website popovers and broad UI containers are deliberately left alone.
+  A clickable pet frame is supported when it has a pet semantic hint; unmarked
+  interactive controls are rejected to avoid moving ordinary site buttons.
 - Open Shadow DOM can be searched. Closed Shadow DOM is unsupported. Iframes
   can be selected only at their outer boundary; inner cross-origin content is
   not inspected. A pet whose renderer stops when out of flow/intersection may
@@ -125,12 +127,14 @@ available names for an unknown test name). `CHROME_EXECUTABLE` can select a
 compatible Chromium binary; use Playwright's bundled Chromium for reproducible
 unpacked-extension support.
 
-Tests load the **actual unpacked MV3 extension** in isolated temporary Chromium
+Nineteen tests load the **actual unpacked MV3 extension** in isolated temporary Chromium
 profiles and fulfill all ChatGPT fixture requests locally. They exercise content
 script matching, real extension storage, popup messaging, selection and parent
 selection, drag/resize, native animation/styles, lock/reset, reload/remount/SPA,
 viewport recovery, clipping, SVG/canvas, and safe failure without a pet. These
 are simulated pages, **not production ChatGPT results**.
+One additional browser regression controls storage-response latency to check
+that early page events cannot override a saved Reset before initialization.
 
 For live verification, use a non-sensitive Dots page: pick the whole pet frame,
 enlarge to 300–500%, move and lock it, test native pet interaction and ordinary

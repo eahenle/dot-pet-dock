@@ -75,6 +75,7 @@ BASE_CSS = """
   #bad-ui { width: 180px; height: 96px; display: flex; align-items: center; gap: 10px; padding: 10px; background: #fff; border: 2px solid #d65b5b; }
   #bad-ui svg { width: 56px; height: 56px; }
   #bad-ui button { padding: 5px 7px; }
+  #pet.button-pet { border: 0; padding: 0; cursor: pointer; }
 """
 
 
@@ -141,6 +142,21 @@ def fixture_html(scene: str) -> str:
     elif scene == "safety":
         pet = '<div id="bad-ui"><svg id="bad-art" viewBox="0 0 100 100" aria-label="decorative icon"><circle cx="50" cy="50" r="44" fill="#c34d4d"/></svg><button id="delete-conversation" type="button">Delete conversation</button></div>'
         controls = ""
+    elif scene == "button-pet":
+        pet = '<button id="pet" class="pet-visual button-pet" data-testid="dot-pet" type="button">' + svg_art() + "</button>"
+        controls = """
+          <output id="pet-click-count" aria-label="Pet click count">0</output>
+          <script>
+            window.addEventListener('DOMContentLoaded', () => {
+              document.querySelector('#pet').addEventListener('click', () => {
+                const count = Number(document.querySelector('#pet').dataset.clicks || '0') + 1;
+                document.querySelector('#pet').dataset.clicks = String(count);
+                document.querySelector('#pet-click-count').value = String(count);
+                document.querySelector('#pet-click-count').textContent = String(count);
+              });
+            });
+          </script>
+        """
     elif scene == "spa":
         pet = '<div id="pet" class="pet-visual">' + svg_art() + "</div>"
         controls = """
@@ -356,6 +372,45 @@ def test_auto_detect_and_svg_parent(playwright: Any) -> None:
         assert page.locator("#pet-art").count() == 1
 
 
+def test_interactive_marked_button_pet_auto_manual_and_reset(playwright: Any) -> None:
+    """An explicitly marked button pet keeps its page click handler intact."""
+
+    with harness(playwright, "button-pet") as h:
+        page = h.open()
+        selected = wait_for_target(page)
+        assert selected.get_attribute("id") == "pet"
+        assert selected.evaluate("el => el.tagName.toLowerCase()") == "button"
+
+        selected.click()
+        assert page.locator("#pet-click-count").text_content() == "1"
+        # The exact marker may have auto-attached before this assertion, so the
+        # fixture's no-style declaration is the stable pre-extension baseline.
+        baseline_style = None
+
+        root(page).locator("#reset").click()
+        target(page).first.wait_for(state="detached", timeout=2500)
+        assert page.locator("#pet").get_attribute("style") == baseline_style
+        assert page.locator("#pet").get_attribute("popover") is None
+        assert page.locator("#pet").get_attribute("data-dot-pet-dock-target") is None
+
+        # Reset opts out of automatic attachment. A fresh picker action must
+        # still be able to select the exact marked button explicitly.
+        start_picker(page)
+        box = page.locator("#pet").bounding_box()
+        assert box
+        page.mouse.click(*centre(box))
+        selected = wait_for_target(page)
+        assert selected.get_attribute("id") == "pet"
+        selected.click()
+        assert page.locator("#pet-click-count").text_content() == "2"
+
+        root(page).locator("#reset").click()
+        target(page).first.wait_for(state="detached", timeout=2500)
+        assert page.locator("#pet").get_attribute("style") == baseline_style
+        assert page.locator("#pet").get_attribute("popover") is None
+        assert not h.errors, h.errors
+
+
 def test_manual_select_drag_resize_and_clipped_transform(playwright: Any) -> None:
     with harness(playwright, "clipped") as h:
         page = h.open()
@@ -534,6 +589,10 @@ def test_disabling_extension_cleans_page_mutations(playwright: Any) -> None:
         toggle = item.locator("#enableToggle")
         assert toggle.is_checked()
         toggle.click()
+        for _ in range(25):
+            if not toggle.is_checked():
+                break
+            extensions.wait_for_timeout(100)
         assert not toggle.is_checked()
         page.bring_to_front()
         page.locator("#dot-pet-dock-root").wait_for(state="detached", timeout=8000)
@@ -622,9 +681,11 @@ def test_remounted_clone_styles_are_cleaned_by_reset(playwright: Any) -> None:
 def test_lock_reset_and_inline_style_restoration(playwright: Any) -> None:
     with harness(playwright, "inline") as h:
         page = h.open()
-        before = page.locator("#pet").get_attribute("style")
-        assert before
-        select_at(page, "#pet-art")
+        # The semantic marker may auto-attach before the page settles. Keep
+        # the fixture declaration as the authoritative pre-extension baseline
+        # instead of racing the content script's first storage read.
+        before = INLINE_STYLE
+        wait_for_target(page)
         root(page).locator("#lock").click()
         assert target(page).count() == 1
         assert root(page).locator("#frame").is_hidden()
@@ -724,6 +785,46 @@ def test_canvas_auto_detection(playwright: Any) -> None:
         assert not h.errors, h.errors
 
 
+def test_saved_opt_out_wins_over_early_page_lifecycle(playwright: Any) -> None:
+    """Control storage-read latency to exercise the initialization race.
+
+    The other cases load the unpacked extension. This one runs the same scripts
+    in a fixture with a delayed storage API so pageshow precedes saved state.
+    """
+    options = {"headless": True, "channel": "chromium"}
+    if os.getenv("CHROME_EXECUTABLE"):
+        options["executable_path"] = os.environ["CHROME_EXECUTABLE"]
+    browser = playwright.chromium.launch(**options)
+    try:
+        page = browser.new_page()
+        page.set_content(fixture_html("auto"))
+        page.evaluate(
+            """() => {
+              chrome.runtime = {id:'fixture', getManifest:()=>({}),
+                onMessage:{addListener(){},removeListener(){}}};
+              chrome.storage = {local:{
+                get:async()=>{
+                  await new Promise(resolve=>setTimeout(resolve, 1000));
+                  window.fixtureStorageLoaded = true;
+                  return {'dot-pet-dock:v2':{disabled:true}};
+                },
+                set:async()=>{}
+              }};
+            }"""
+        )
+        page.add_script_tag(path=str(ROOT / "targeting.js"))
+        page.add_script_tag(path=str(ROOT / "content.js"))
+        page.evaluate("dispatchEvent(new PageTransitionEvent('pageshow'))")
+        page.wait_for_timeout(150)
+        assert target(page).count() == 0, "pet attached before saved settings loaded"
+        page.wait_for_function("() => window.fixtureStorageLoaded === true")
+        page.wait_for_timeout(100)
+        assert target(page).count() == 0, "saved Reset opt-out was overridden by early recovery"
+        assert page.locator("#pet").get_attribute("style") is None
+    finally:
+        browser.close()
+
+
 def test_popup_controls_render_against_extension_page(playwright: Any) -> None:
     """Exercise the real popup page and its message path to the real tab.
 
@@ -789,8 +890,89 @@ def test_popup_controls_render_against_extension_page(playwright: Any) -> None:
         popup.close()
 
 
+def test_popup_scale_survives_close_with_delayed_replies(playwright: Any) -> None:
+    """Each slider input must reach the tab before the popup disappears.
+
+    The wrapper invokes Chrome's native sendMessage immediately, but delays
+    resolving its Promise. Closing the popup while the first reply is pending
+    therefore models a real slow content-script response without allowing a
+    synthetic timer to stand in for the IPC call itself.
+    """
+
+    with harness(playwright, "auto") as h:
+        page = h.open()
+        for other in list(h.context.pages):
+            if other is not page and other.url == "about:blank":
+                other.close()
+        popup = h.context.new_page()
+        popup.add_init_script(
+            """
+            (() => {
+              const getWindows = chrome.windows.getAll.bind(chrome.windows);
+              chrome.tabs.query = async () => {
+                const windows = await getWindows({populate: true});
+                return windows.flatMap(window => window.tabs || [])
+                  .filter(tab => !String(tab.url || '').startsWith('chrome-extension://'))
+                  .map(tab => ({...tab, url: 'https://chatgpt.com/c/fixture'}));
+              };
+              const nativeSendMessage = chrome.tabs.sendMessage.bind(chrome.tabs);
+              window.__dockScaleCalls = [];
+              chrome.tabs.sendMessage = (...args) => {
+                const message = args[1] || {};
+                if (message.action === 'SET_SCALE') window.__dockScaleCalls.push(message.scale);
+                let reply;
+                try {
+                  // Invoke the real extension API before adding latency to the
+                  // response. A popup close cannot cancel this IPC request.
+                  reply = nativeSendMessage(...args);
+                } catch (error) {
+                  return Promise.reject(error);
+                }
+                return Promise.resolve(reply).then(value => new Promise(resolve => {
+                  window.setTimeout(() => resolve(value), 100);
+                }));
+              };
+            })();
+            """
+        )
+        try:
+            popup.goto(f"chrome-extension://{unpacked_extension_id()}/popup.html", wait_until="domcontentloaded")
+            popup.locator("#status", has_text="Pet selected").wait_for(state="visible", timeout=3000)
+
+            popup.locator("#scale").evaluate(
+                """el => {
+                  el.value = '150';
+                  el.dispatchEvent(new Event('input', {bubbles:true}));
+                }"""
+            )
+            # Let the first zero-delay send task run, leaving its reply pending
+            # under the wrapper above before later values are dispatched.
+            popup.wait_for_timeout(0)
+            assert popup.evaluate("() => window.__dockScaleCalls") == [1.5]
+            popup.locator("#scale").evaluate(
+                """el => {
+                  for (const value of ['290', '240']) {
+                    el.value = value;
+                    el.dispatchEvent(new Event('input', {bubbles:true}));
+                  }
+                }"""
+            )
+            # Close immediately. The content script must already have received
+            # both later native requests; delayed popup replies are irrelevant.
+            popup.close()
+
+            page.wait_for_function("() => getComputedStyle(document.querySelector('#pet')).zoom === '2.4'", timeout=3000)
+            page.reload(wait_until="domcontentloaded")
+            wait_for_target(page)
+            page.wait_for_function("() => getComputedStyle(document.querySelector('#pet')).zoom === '2.4'", timeout=3000)
+        finally:
+            if not popup.is_closed():
+                popup.close()
+
+
 TESTS: dict[str, Callable[[Any], None]] = {
     "auto": test_auto_detect_and_svg_parent,
+    "button-pet": test_interactive_marked_button_pet_auto_manual_and_reset,
     "clipped": test_manual_select_drag_resize_and_clipped_transform,
     "layout": test_in_flow_layout_slot_does_not_shift_following_content,
     "viewport": test_viewport_resize_and_saved_position_recovery,
@@ -807,6 +989,8 @@ TESTS: dict[str, Callable[[Any], None]] = {
     "stale": test_stale_identity_recovery_and_absence,
     "canvas": test_canvas_auto_detection,
     "popup": test_popup_controls_render_against_extension_page,
+    "popup-close": test_popup_scale_survives_close_with_delayed_replies,
+    "startup-latency": test_saved_opt_out_wins_over_early_page_lifecycle,
 }
 
 
@@ -829,7 +1013,7 @@ def run(selected: str | None = None) -> int:
     if failures:
         print(f"{len(failures)} of {len(names)} browser integration test(s) failed.")
         return 1
-    print(f"PASS: {len(names)} unpacked-extension browser integration tests")
+    print(f"PASS: {len(names)} browser tests (startup-latency uses a controlled storage API)")
     return 0
 
 

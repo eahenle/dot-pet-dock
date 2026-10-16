@@ -50,11 +50,13 @@ Manifest V3 extension** into temporary browser profiles. All fixture ChatGPT
 requests are fulfilled locally; no authenticated profile, cookie export,
 conversation content, or production pet assets are used.
 
-`python tests/smoke_browser.py` exercises 17 browser cases:
+`python tests/smoke_browser.py` exercises 19 unpacked-extension browser cases:
 
 - Automatic detection and manual SVG/container selection, parent promotion,
   rejection of sidebar/conversation and interactive UI wrappers, and invalid
   saved selectors.
+- Semantically marked native button pets retain their click handlers through
+  automatic/manual selection and Reset; unrelated controls remain rejected.
 - Pointer dragging, keyboard resizing at 50%/500%, clipped/transformed source
   containers, reachable controls, and recovery from off-screen positions.
 - Preserved layout space, native CSS animation and transform updates,
@@ -69,6 +71,15 @@ conversation content, or production pet assets are used.
   lock/unlock/reset, and size controls. The test adapts only tab enumeration:
   opening a popup as a normal tab changes Chrome's active tab, unlike an action
   popup. It does not replace the message transport or content script.
+- Popup closure while an earlier reply is delayed preserves the latest size.
+  Slider input dispatches each native message immediately; stale replies cannot
+  repaint an older size. Content-side storage writes remain debounced.
+
+An additional controlled browser case delays the storage API response, then
+fires an early `pageshow`. Recovery must wait for saved settings and preserve
+a stored Reset opt-out. The pre-fix script attached a pet both before and after
+the opt-out loaded; the fixed script attaches none. This one latency test uses
+the same scripts with a controlled storage API rather than loading an extension.
 
 JavaScript syntax, Python compilation, and whitespace checks also run. The
 GitHub Actions workflow repeats syntax and browser checks on Ubuntu. Fixture

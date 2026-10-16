@@ -142,6 +142,7 @@
   let notice = '';
   let disposed = false;
   let enabled = true;
+  let initialized = false;
   let frameRequest = 0;
   let reconnectTimer = 0;
   let saveTimer = 0;
@@ -493,6 +494,7 @@
   }
 
   function startPicking() {
+    if (!initialized) { void ready.then(startPicking); return; }
     endGesture();
     picking = true; candidateOnDown = null; notice = '';
     clearTimeout(toastTimer);
@@ -538,7 +540,7 @@
 
   function reconnect() {
     reconnectTimer = 0;
-    if (disposed || document.hidden) return;
+    if (!initialized || disposed || document.hidden) return;
     if (target?.isConnected) return;
     if (target) { restoreTarget(); discoverRoots = true; }
     if (discoverRoots) watchRoots();
@@ -762,7 +764,7 @@
         scale: clamp(finite(value.scale, 1), .5, 5), locked: !!value.locked };
     }
     if (migrated && saved) await writeStorage(saved);
-    watchRoots(); reconnect();
+    watchRoots(); initialized = true; reconnect();
   }
   const ready = initialize();
 

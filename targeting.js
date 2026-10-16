@@ -22,10 +22,14 @@
   }
 
   function safe(element, measure = true) {
+    // A semantically identified pet may itself be a native clickable frame.
+    // Keep that frame's listeners while still rejecting nested UI controls.
+    const interactivePet = element instanceof HTMLElement && element.matches(HINTS) &&
+      element.matches('button,a,[role="button"],[role="link"]') && media(element).length === 1;
     if (!(element instanceof HTMLElement) || !element.isConnected ||
         element === document.body || element === document.documentElement ||
         element.id === 'dot-pet-dock-root' || element.closest('#dot-pet-dock-root') ||
-        element.matches(FORBIDDEN) || element.querySelector(FORBIDDEN) ||
+        (element.matches(FORBIDDEN) && !interactivePet) || element.querySelector(FORBIDDEN) ||
         element.hasAttribute('popover') || element.closest('[data-message-author-role],[data-testid^="conversation-turn"]')) return false;
     const visuals = media(element);
     if (!visuals.length || visuals.length > 8) return false;
