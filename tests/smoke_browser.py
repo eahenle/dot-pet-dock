@@ -1133,6 +1133,27 @@ def test_popup_controls_render_against_extension_page(playwright: Any) -> None:
         assert popup.locator("#scale").input_value() == "100"
         assert popup.locator("#reset").is_enabled()
         assert popup.locator("#lock").is_enabled()
+        size = popup.get_by_role("spinbutton", name="Display size", exact=True)
+        size.wait_for(state="visible", timeout=1500)
+        size.fill("")
+        size.press_sequentially("2")
+        assert size.input_value() == "2", "typing an incomplete percentage must remain editable"
+        assert page.locator("#pet").evaluate("e => getComputedStyle(e).zoom") == "1"
+        size.press_sequentially("57")
+        page.wait_for_function("() => getComputedStyle(document.querySelector('#pet')).zoom === '2.57'")
+        size.press("ArrowUp")
+        page.wait_for_function("() => getComputedStyle(document.querySelector('#pet')).zoom === '2.58'")
+        size.fill("999")
+        assert page.locator("#pet").evaluate("e => getComputedStyle(e).zoom") == "2.58"
+        size.press("Enter")
+        page.wait_for_function("() => getComputedStyle(document.querySelector('#pet')).zoom === '5'")
+        assert size.input_value() == "500"
+        size.fill("49")
+        size.press("Tab")
+        page.wait_for_function("() => getComputedStyle(document.querySelector('#pet')).zoom === '0.5'")
+        size.fill("")
+        size.press("Tab")
+        assert size.input_value() == "50", "an empty field must restore the last applied percentage"
         popup.locator("#scale").evaluate(
             """el => {
               for (const value of [150, 290, 240]) {
@@ -1143,8 +1164,9 @@ def test_popup_controls_render_against_extension_page(playwright: Any) -> None:
             }"""
         )
         page.wait_for_function("() => getComputedStyle(document.querySelector('#pet')).zoom === '2.4'")
-        assert popup.locator("#scale").input_value() == "240", "rapid slider input lost the final value"
-        popup.locator("#lock").check()
+        assert popup.locator("#scale").input_value() == "240", "rapid size input lost the final value"
+        popup.locator("#lock").click()
+        popup.wait_for_function("() => document.querySelector('#lock').checked")
         assert "Pet docked" in (popup.locator("#status").text_content() or "")
         page.bring_to_front()
         assert root(page).locator("#frame").is_hidden()
@@ -1165,7 +1187,7 @@ def test_popup_controls_render_against_extension_page(playwright: Any) -> None:
 
 
 def test_popup_scale_survives_close_with_delayed_replies(playwright: Any) -> None:
-    """Each slider input must reach the tab before the popup disappears.
+    """Each valid size input must reach the tab before the popup disappears.
 
     The wrapper invokes Chrome's native sendMessage immediately, but delays
     resolving its Promise. Closing the popup while the first reply is pending
