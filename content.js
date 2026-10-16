@@ -1,4 +1,4 @@
-/* Dot Pet Dock v0.2.0: local-only visual display controls. */
+/* Dot Pet Dock v0.3.0: local-only visual display controls. */
 (() => {
   'use strict';
   if (window !== window.top || document.getElementById('dot-pet-dock-root')) return;
@@ -52,7 +52,8 @@
       #toolbar {
         display: flex; align-items: center; gap: 3px;
         position: absolute; left: -2px; top: -35px;
-        height: 30px; padding: 3px;
+        min-height: 30px; height: auto; padding: 3px;
+        max-width: calc(100vw - 16px); flex-wrap: wrap;
         border: 1px solid #7763b8; border-radius: 9px;
         background: #251f38; color: #f6f3ff;
         box-shadow: 0 4px 15px rgba(0,0,0,.28);
@@ -98,6 +99,8 @@
       <div id="toolbar" role="toolbar" aria-label="Pet display controls">
         <button id="move" title="Drag to move the pet; arrow keys move 10 pixels">✥ Move</button>
         <button id="parent" title="Target the selected element's parent container">↑ Parent</button>
+        <button id="wave" title="Play the pet's wave animation once">Wave</button>
+        <button id="jump" title="Play the pet's jump animation once">Jump</button>
         <button id="lock" title="Hide the editing handles">Lock</button>
         <button id="reset" title="Restore the page's original pet display">Reset</button>
       </div>
@@ -126,6 +129,7 @@
   const parentButton = $('parent');
   const scaleReadout = $('scale-readout');
   const targeting = globalThis.DotPetDockTargeting;
+  const animations = globalThis.DotPetDockAnimations;
   const KEY = 'dot-pet-dock:v2';
   const clamp = (value, lo, hi) => Math.min(Math.max(value, lo), hi);
   const finite = (value, fallback) => typeof value === 'number' && Number.isFinite(value) ? value : fallback;
@@ -282,6 +286,7 @@
   });
 
   function restoreTarget() {
+    animations.stop();
     endGesture();
     targetObserver.disconnect();
     resizeObserver.disconnect();
@@ -443,11 +448,13 @@
     frame.style.left = `${rect.left}px`; frame.style.top = `${rect.top}px`;
     frame.style.width = `${rect.width}px`; frame.style.height = `${rect.height}px`;
     const toolbar = $('toolbar');
+    const animationState = animations.state(target);
+    $('wave').style.display = $('jump').style.display = animationState.animationAvailable ? '' : 'none';
     // Toolbar and resize handle are independently clamped, even for a pet that
     // is larger than the viewport. Native pet pointer events stay unobstructed.
     toolbar.style.position = 'fixed';
     toolbar.style.left = `${clamp(rect.left, 8, Math.max(8, innerWidth - toolbar.offsetWidth - 8))}px`;
-    toolbar.style.top = `${clamp(rect.top - 35, 8, Math.max(8, innerHeight - 38))}px`;
+    toolbar.style.top = `${clamp(rect.top - toolbar.offsetHeight - 5, 8, Math.max(8, innerHeight - toolbar.offsetHeight - 8))}px`;
     resizeHandle.style.position = 'fixed';
     resizeHandle.style.left = `${clamp(rect.right - 9, 8, Math.max(8, innerWidth - 26))}px`;
     resizeHandle.style.top = `${clamp(rect.bottom - 9, 45, Math.max(45, innerHeight - 26))}px`;
@@ -509,7 +516,7 @@
 
   function startPicking() {
     if (!initialized) { void ready.then(startPicking); return; }
-    endGesture();
+    endGesture(); animations.stop();
     picking = true; candidateOnDown = null; notice = '';
     clearTimeout(toastTimer);
     instruction.textContent = 'Click the pet or its small visual frame. Esc cancels.';
@@ -527,6 +534,7 @@
   let discoverRoots = false;
   const treeObserver = new MutationObserver(records => {
     if (disposed) return;
+    animations.reconcile(target);
     if (location.pathname !== route) { route = location.pathname; stopPicking(); }
     // Child-list changes only; ignore our controls and all animation attributes.
     if (records.every(record => record.target === host || host.contains(record.target))) return;
@@ -673,6 +681,12 @@
   });
   listen($('lock'), 'click', () => toggleLock(true));
   listen($('reset'), 'click', reset);
+  for (const [id, clip] of [['wave', 'waving'], ['jump', 'jumping']]) {
+    listen($(id), 'click', () => {
+      try { animations.play(target, clip); renderFrame(); }
+      catch (error) { toast(error.message); }
+    });
+  }
 
   listen(picker, 'pointermove', event => { if (picking) showHover(beneathPicker(event.clientX, event.clientY)); });
   listen(picker, 'pointerdown', event => {
@@ -723,7 +737,7 @@
   listen(window, 'blur', endGesture);
   listen(window, 'resize', () => { placeTarget(); if (saved) saveConfig(); });
   listen(document, 'visibilitychange', () => {
-    if (document.hidden) { endGesture(); cancelAnimationFrame(frameRequest); frameRequest = 0; }
+    if (document.hidden) { animations.stop(); endGesture(); cancelAnimationFrame(frameRequest); frameRequest = 0; }
     else { queueReconnect(); placeTarget(); queueFrame(); }
   });
   listen(window, 'popstate', () => { route = location.pathname; stopPicking(); queueReconnect(); });
@@ -784,7 +798,7 @@
 
   function state() {
     return { ok: true, selected: !!target?.isConnected, saved: !!saved, scale: saved?.scale ?? 1,
-      locked: !!saved?.locked, picking, notice };
+      locked: !!saved?.locked, picking, notice, ...animations.state(target) };
   }
 
   function onMessage(message, _sender, sendResponse) {
@@ -808,6 +822,10 @@
         case 'SET_SCALE': setScale(message.scale); break;
         case 'LOCK': toggleLock(message.locked); break;
         case 'RESET': await reset(); break;
+        case 'ANIMATE':
+          try { animations.play(target, message.clip); renderFrame(); }
+          catch (failure) { error = failure.message; }
+          break;
         default: error = 'Unknown action.';
       }
       sendResponse({ ...state(), ok: !error, ...(error ? { error } : {}) });

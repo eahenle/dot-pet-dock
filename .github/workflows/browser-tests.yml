@@ -24,6 +24,7 @@ jobs:
         run: |
           node --check content.js
           node --check targeting.js
+          node --check animations.js
           node --check popup.js
       - name: Run unpacked extension browser suite
         run: python tests/smoke_browser.py

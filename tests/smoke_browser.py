@@ -28,7 +28,7 @@ import traceback
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Iterator
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 from playwright.sync_api import BrowserContext, Page, sync_playwright
 
@@ -146,6 +146,11 @@ def fixture_html(scene: str) -> str:
         # Sanitized production structure: CSS artwork plus a sibling overlay
         # button. No production asset, account name, or conversation is copied.
         classes = "group/avatar group/orbit-profile" if scene != "sprite-unmarked" else "ordinary-avatar"
+        sheet = "<svg xmlns='http://www.w3.org/2000/svg' width='448' height='616'>" + "".join(
+            f"<circle cx='{col * 56 + 28}' cy='{row * 56 + 28}' r='24' fill='hsl({row * 35} 55% 55%)'/>"
+            for row in range(11) for col in range(8)
+        ) + "</svg>"
+        sprite_url = "data:image/svg+xml," + quote(sheet, safe="")
         extra = '<button type="button">Delete conversation</button>' if scene == "sprite-unsafe" else ""
         pet = f"""
           <style>
@@ -158,9 +163,9 @@ def fixture_html(scene: str) -> str:
             #sprite-name > div {{ display:flex; max-width:100%; min-width:0; font-size:16px; line-height:20px; padding:4px 10px; }}
             #sprite-name-text {{ display:block; max-width:100%; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }}
             #sprite-art {{ width:56px; height:56px;
-              background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='112' height='56'%3E%3Ccircle cx='28' cy='28' r='24' fill='%23774bbb'/%3E%3Ccircle cx='84' cy='28' r='24' fill='%23bb774b'/%3E%3C/svg%3E");
+              background-image:url("{sprite_url}"); background-size:800% 1100%; background-repeat:no-repeat;
               animation: sprite-frames 400ms steps(1) infinite; }}
-            @keyframes sprite-frames {{ 0% {{ background-position:0 0; }} 50% {{ background-position:-56px 0; }} }}
+            @keyframes sprite-frames {{ 0% {{ background-position:0% 0%; }} 50% {{ background-position:14.285714% 0%; }} }}
           </style>
           <div id="pet" class="{classes}">
             <button id="sprite-overlay" class="absolute inset-0 touch-none" type="button" aria-label="Open fixture profile"></button>
@@ -458,6 +463,117 @@ def test_production_css_sprite_keeps_overlay_and_recovers(playwright: Any) -> No
         assert page.locator("#pet").get_attribute("style") is None
         page.locator("#sprite-overlay").click()
         assert page.locator("#sprite-clicks").text_content() == "1"
+        assert not h.errors, h.errors
+
+
+def test_native_animation_wave_returns_to_live_state(playwright: Any) -> None:
+    """Wave must play the native row, then reveal the latest site animation."""
+    with harness(playwright, "sprite") as h:
+        page = h.open()
+        wait_for_target(page)
+        root(page).locator("#wave").wait_for(state="visible", timeout=1500)
+        root(page).locator("#wave").click()
+        page.wait_for_function("() => parseFloat(getComputedStyle(document.querySelector('#sprite-art')).backgroundPositionY) === 30")
+        positions = set()
+        for _ in range(4):
+            positions.add(page.locator("#sprite-art").evaluate("e => getComputedStyle(e).backgroundPositionX"))
+            page.wait_for_timeout(90)
+        assert len(positions) > 1, "Wave must advance through native frames"
+        page.locator("#sprite-art").evaluate("e => { e.style.animation = 'none'; e.style.backgroundPosition = '100% 70%'; }")
+        page.wait_for_function("() => parseFloat(getComputedStyle(document.querySelector('#sprite-art')).backgroundPositionY) === 70", timeout=2000)
+        assert page.locator("#sprite-art").evaluate("e => !e.getAnimations().some(a => a.id === 'dot-pet-dock-clip')")
+        assert page.locator("#sprite-art").evaluate("e => e.style.backgroundPosition") == "100% 70%"
+        assert not h.errors, h.errors
+
+
+def test_native_animation_replacement_and_reset(playwright: Any) -> None:
+    """New clips replace old ones and Reset removes only preview effects."""
+    with harness(playwright, "sprite", {"width": 320, "height": 320}) as h:
+        page = h.open()
+        wait_for_target(page)
+        root(page).locator("#wave").wait_for(state="visible", timeout=1500)
+        root(page).locator("#wave").click()
+        root(page).locator("#jump").click()
+        toolbar = root(page).locator("#toolbar").bounding_box()
+        assert toolbar["x"] >= 8 and toolbar["x"] + toolbar["width"] <= 312
+        page.wait_for_function("() => parseFloat(getComputedStyle(document.querySelector('#sprite-art')).backgroundPositionY) === 40")
+        assert page.locator("#sprite-art").evaluate("e => e.getAnimations().filter(a => a.id === 'dot-pet-dock-clip').length") == 1
+        root(page).locator("#reset").click()
+        assert page.locator("#sprite-art").evaluate("e => !e.getAnimations().some(a => a.id === 'dot-pet-dock-clip')")
+        assert page.locator("#sprite-art").get_attribute("style") is None
+        assert page.locator("#pet").get_attribute("style") is None
+        assert not h.errors, h.errors
+
+
+def test_popup_animation_controls_work_while_locked(playwright: Any) -> None:
+    """Each popup icon must play immediately on a locked pet."""
+    with harness(playwright, "sprite") as h:
+        page = h.open()
+        wait_for_target(page)
+        root(page).locator("#lock").click()
+        for other in list(h.context.pages):
+            if other is not page and other.url == "about:blank": other.close()
+        popup = h.context.new_page()
+        popup.add_init_script("""(() => {
+          const query = chrome.tabs.query.bind(chrome.tabs);
+          chrome.tabs.query = async () => {
+            const tabs = await query({});
+            const current = await chrome.tabs.getCurrent();
+            return tabs.filter(t => t.id !== current.id)
+              .map(t => ({...t, url:'https://chatgpt.com/c/fixture'}));
+          };
+        })();""")
+        popup.goto(f"chrome-extension://{unpacked_extension_id()}/popup.html")
+        popup.get_by_role("button", name="Play Work", exact=True).wait_for(state="visible", timeout=1500)
+        assert popup.locator("#animation-buttons button").count() == 9
+        popup.get_by_role("button", name="Play Work", exact=True).click()
+        page.wait_for_function("() => parseFloat(getComputedStyle(document.querySelector('#sprite-art')).backgroundPositionY) === 70")
+        page.wait_for_function("() => !document.querySelector('#sprite-art').getAnimations().some(a => a.id === 'dot-pet-dock-clip')")
+        invalid = popup.evaluate("""async () => {
+          const [tab] = await chrome.tabs.query({active:true,currentWindow:true});
+          return chrome.tabs.sendMessage(tab.id, {namespace:'DOT_PET_DOCK',action:'ANIMATE',clip:'__proto__'});
+        }""")
+        assert invalid["ok"] is False and invalid["playing"] is None
+        # Delay one STATE transport failure while real animation messages keep
+        # flowing. An old poll must not clear the newer clip's active icon/status.
+        popup.evaluate("""() => {
+          const send = chrome.tabs.sendMessage.bind(chrome.tabs);
+          let delayNextPoll = true;
+          chrome.tabs.sendMessage = (id, message) => {
+            if (message.action === 'STATE' && delayNextPoll) {
+              delayNextPoll = false;
+              return new Promise((resolve, reject) => {
+                window.rejectOldPoll = () => reject(new Error('Delayed transport failure'));
+              });
+            }
+            return send(id, message);
+          };
+        }""")
+        popup.get_by_role("button", name="Play Wave", exact=True).click()
+        popup.wait_for_function("() => typeof window.rejectOldPoll === 'function'")
+        popup.get_by_role("button", name="Play Jump", exact=True).click()
+        popup.locator("#animation-status", has_text="Playing Jump").wait_for()
+        popup.evaluate("window.rejectOldPoll()")
+        popup.wait_for_timeout(30)
+        assert "Playing Jump" in popup.locator("#animation-status").text_content()
+        assert popup.get_by_role("button", name="Play Jump", exact=True).get_attribute("data-playing") == "true"
+        assert popup.locator("#lock").is_checked()
+        assert not h.errors, h.errors
+
+
+def test_animation_atlas_versions_and_unsupported_renderers(playwright: Any) -> None:
+    """Use v1 row coordinates and reject unrecognized grids/owned positions."""
+    with harness(playwright, "sprite") as h:
+        page = h.open()
+        wait_for_target(page)
+        page.locator("#sprite-art").evaluate("e => { e.style.backgroundSize = '800% 900%'; }")
+        root(page).locator("#wave").click()
+        page.wait_for_function("() => parseFloat(getComputedStyle(document.querySelector('#sprite-art')).backgroundPositionY) === 37.5")
+        page.wait_for_function("() => !document.querySelector('#sprite-art').getAnimations().some(a => a.id === 'dot-pet-dock-clip')")
+        page.locator("#sprite-art").evaluate("e => { e.style.backgroundSize = '700% 1100%'; }")
+        root(page).locator("#wave").wait_for(state="hidden")
+        page.locator("#sprite-art").evaluate("e => { e.style.backgroundSize = '800% 1100%'; e.style.setProperty('background-position-x','0%','important'); }")
+        assert root(page).locator("#wave").is_hidden()
         assert not h.errors, h.errors
 
 
@@ -970,6 +1086,7 @@ def test_saved_opt_out_wins_over_early_page_lifecycle(playwright: Any) -> None:
             }"""
         )
         page.add_script_tag(path=str(ROOT / "targeting.js"))
+        page.add_script_tag(path=str(ROOT / "animations.js"))
         page.add_script_tag(path=str(ROOT / "content.js"))
         page.evaluate("dispatchEvent(new PageTransitionEvent('pageshow'))")
         page.wait_for_timeout(150)
@@ -1129,6 +1246,10 @@ def test_popup_scale_survives_close_with_delayed_replies(playwright: Any) -> Non
 
 TESTS: dict[str, Callable[[Any], None]] = {
     "auto": test_auto_detect_and_svg_parent,
+    "animation-wave": test_native_animation_wave_returns_to_live_state,
+    "animation-lifecycle": test_native_animation_replacement_and_reset,
+    "animation-popup": test_popup_animation_controls_work_while_locked,
+    "animation-layouts": test_animation_atlas_versions_and_unsupported_renderers,
     "sprite": test_production_css_sprite_keeps_overlay_and_recovers,
     "sprite-safety": test_css_sprite_adapter_rejects_other_controls,
     "sprite-overflow": test_docked_sprite_does_not_add_scrollbars,

@@ -40,5 +40,10 @@ input[type=range]:disabled { cursor: not-allowed; }
 .range-labels { display: flex; justify-content: space-between; margin-top: 2px; color: #8f84a1; font-size: 10px; }
 .check { display: flex; align-items: center; gap: 8px; margin-top: 13px; color: #dfd5e9; cursor: pointer; }
 .check input { width: 16px; height: 16px; margin: 0; accent-color: #9074d7; }
+.animation-controls { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin-top: 7px; }
+.animation-controls button { display: grid; place-items: center; min-width: 0; height: 38px; padding: 6px; }
+.animation-controls svg { width: 22px; height: 22px; }
+.animation-controls button[data-playing="true"] { background: #58418e; border-color: #b89bf8; color: #fff; }
+#animation-status { margin-top: 7px; }
 .help, .shortcut { color: #b7a9c5; margin: 13px 0 0; font-size: 11px; }
 .shortcut { color: #8f84a1; margin-top: 8px; }

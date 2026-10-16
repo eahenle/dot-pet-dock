@@ -4,7 +4,7 @@ Give your ChatGPT Dot pet more room: enlarge it **50–500%**, move it with an
 explicit handle, then lock it in place. A small, local-only Chrome Manifest V3
 extension with no build step, account, server, or API key.
 
-**v0.2.0 compatibility:** tested as an actual unpacked extension in Chromium
+**v0.3.0 compatibility:** tested as an actual unpacked extension in Chromium
 against SVG/canvas/CSS-sprite fixtures, and against a live production Dots pet
 in Chrome on October 16, 2026. The production adapter recognizes the pet avatar
 and its native button overlay; the nametag keeps its original display size.
@@ -43,6 +43,14 @@ check it out before loading the folder.
 5. **Restore original display** restores owned website styles and removes the
    dock. It also stops automatic attachment on later reloads until you select
    or find a pet again.
+
+For a supported Dots pet, **Wave** and **Jump** on the dock play the native
+animation once. The extension popup offers an icon for each of the nine clips,
+including while locked. Click an icon to play immediately; hover to see its name.
+Playback returns automatically to live activity after the clip. This previews
+the existing artwork without changing ChatGPT's working/status state. Playback
+stops when the tab is hidden, the selected renderer disappears, or you Reset.
+Unsupported sprite layouts keep animation controls disabled.
 
 Position, size, and lock settings are shared across conversations and saved in
 Chrome's local extension storage. One display is remembered at a time. If the
@@ -117,6 +125,7 @@ python -m pip install -r requirements-dev.txt
 python -m playwright install chromium
 python tests/smoke_browser.py
 node --check targeting.js
+node --check animations.js
 node --check content.js
 node --check popup.js
 ```
@@ -128,7 +137,7 @@ available names for an unknown test name). `CHROME_EXECUTABLE` can select a
 compatible Chromium binary; use Playwright's bundled Chromium for reproducible
 unpacked-extension support.
 
-Twenty-four tests load the **actual unpacked MV3 extension** in isolated temporary Chromium
+Twenty-eight tests load the **actual unpacked MV3 extension** in isolated temporary Chromium
 profiles and fulfill all ChatGPT fixture requests locally. They exercise content
 script matching, real extension storage, popup messaging, selection and parent
 selection, drag/resize, native animation/styles, lock/reset, reload/remount/SPA,
