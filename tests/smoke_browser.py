@@ -407,11 +407,18 @@ def seed_extension_storage(harness_instance: Harness, value: dict[str, Any]) -> 
 
 def dock_message(h: Harness, action: str, **fields: Any) -> dict[str, Any]:
     """Send a real popup-to-content message without changing the active-tab lookup."""
+    for other in list(h.context.pages):
+        if other is not h.page and other.url == "about:blank":
+            other.close()
     popup = h.context.new_page()
     try:
         popup.goto(f"chrome-extension://{unpacked_extension_id()}/popup.html")
         return popup.evaluate("""async message => {
-          const [tab] = await chrome.tabs.query({url: 'https://chatgpt.com/*'});
+          // The extension intentionally has no tabs/host metadata permission.
+          // This isolated profile has only the fixture and this popup tab.
+          const current = await chrome.tabs.getCurrent();
+          const tabs = await chrome.tabs.query({});
+          const [tab] = tabs.filter(t => t.id !== current.id);
           return chrome.tabs.sendMessage(tab.id, {namespace: 'DOT_PET_DOCK', ...message});
         }""", {"action": action, **fields})
     finally:
