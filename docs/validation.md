@@ -1,4 +1,4 @@
-# v0.2 implementation and validation
+# Implementation and validation
 
 ## Prototype audit and changes
 
@@ -35,8 +35,9 @@ v0.1 selection can migrate from the current route. Reset persists an opt-out
 so it stays reset after reload. Final writes are sent before document unload;
 an immediate-reset/reload regression caught and verified this requirement.
 
-The document observer watches child lists, not animation styles. Only the
-selected node's owned styles are observed. Geometry tracking stops when
+The document observer watches child lists, not animation styles. The selected
+node's owned styles are observed; v0.3.1 also observes sprite attributes during
+one-shot previews to detect atlas replacement. Geometry tracking stops when
 locked or the browser tab is hidden. Missing targets use debounced recovery without a perpetual
 400 ms document/layout loop. A three-second runtime validity check provides
 best-effort cleanup after extension invalidation. A real Chrome extension
@@ -45,13 +46,13 @@ reliable recovery instruction after extension updates/uninstallation.
 
 ## Automated evidence
 
-Validated on macOS ARM64 with Python 3.10, Playwright 1.64.0, and bundled
-Chromium 156.0.8078.4. The suite loads the repository as an **actual unpacked
+The v0.3.0 baseline was validated on macOS ARM64 with Python 3.10, Playwright
+1.64.0, and bundled Chromium 156.0.8078.4. The suite loads the repository as an **actual unpacked
 Manifest V3 extension** into temporary browser profiles. All fixture ChatGPT
 requests are fulfilled locally; no authenticated profile, cookie export,
 conversation content, or production pet assets are used.
 
-`python tests/smoke_browser.py` exercises 28 unpacked-extension browser cases
+`python tests/smoke_browser.py` exercises 32 unpacked-extension browser cases
 plus one controlled storage-latency case:
 
 - Automatic detection and manual SVG/container selection, parent promotion,
@@ -177,3 +178,101 @@ the field rounds and clamps to 50–500%. An empty or invalid draft restores the
 last applied percentage. Focused drafts survive asynchronous replies and redraws.
 Browser coverage includes multi-digit typing, keyboard stepping, empty entries,
 range clamping, rapid updates, and closing the popup before delayed replies.
+
+## v0.3.1 stability investigation
+
+The October 17 report described Kira v2 jitter and irregular behavior without
+a reproducible sequence. The October 18 investigation kept the native renderer
+and artwork intact and compared undocked and docked fixtures to isolate
+extension defects. The origin of the reported live jitter remains unconfirmed.
+The extension release is **0.3.1**; "v2.1 polish"
+describes the requested pet work, not a replacement renderer or new asset.
+
+### Ownership and frame updates
+
+- The native renderer owns sprite frames and activity state. The dock scales
+  and positions the existing frame with CSS `zoom` and a nonmodal popover.
+- The editing `requestAnimationFrame` loop reads geometry and renders handles;
+  it does not write the pet's position on every sprite frame. Locking stops
+  that loop. The selected-node observer checks owned positioning properties,
+  disconnects around dock writes, and does not observe animated descendants.
+- Placement corrections run on attachment, user movement/scaling, relevant
+  selected-node changes, viewport resize, and return to a visible tab.
+  `ResizeObserver` normally refreshes handles. It now also retries a placement
+  explicitly deferred because the selected pet had no layout box.
+- Animation previews use a transient Web Animations effect on supported 8×9
+  and 8×11 atlases. Native state updates continue beneath the effect. Cancelling
+  it reveals the current native frame rather than restoring a stale snapshot.
+  No frame timings, clip mappings, native interactions, or settings schema changed.
+
+### Reproduced extension defects
+
+1. **Hidden resize accumulated coordinates.** Hide an ancestor with
+   `display: none`, resize the viewport, and show it again. The undocked control
+   remained stable. In the docked fixture, two corrective passes treated the
+   missing rectangle `(0, 0, 0, 0)` as an actual position: a pet at
+   `(272, 128.75)` returned at `(816, 386.25)`. The fix defers rectangle-based
+   correction until a layout box exists. The pet then returns at the same
+   coordinates, locked or unlocked. When a smaller viewport requires clamping,
+   the corrected position is also saved after the deferred retry. The review
+   regression reproduced storage retaining x=272 after the displayed frame
+   clamped to x=192; the successful retry now schedules the existing save path.
+2. **An active preview survived replacement of its atlas on the same node.**
+   Reconciliation previously checked connectivity and containment only, so an
+   old preview could keep writing coordinates for a different grid or pet.
+   Playback now records the source and grid identity for its lifetime and
+   cancels on incompatibility or replacement. A sprite-only attribute observer
+   covers this transition while locked; ordinary native frame-position writes
+   do not cancel playback. The observer disconnects on finish, cancellation,
+   replacement, Reset, and disposal. The source identity stays in memory only
+   during playback and is never persisted or logged.
+
+### Regression evidence and limits
+
+Four focused cases supplement the original 29 browser tests:
+
+- Native versus docked sprite frame order and geometry at each sampled time,
+  at 50%, 137%, 250%, and 500%, both locked and unlocked.
+- Native and docked hide/resize/show, including locked recovery.
+- Deferred viewport clamping after Lock flushes settings while hidden, checking
+  the actual extension storage for coordinates, size, and lock state without a
+  pending save timer or another viewport resize masking the result.
+- Grid and same-grid source changes during a paused preview, plus continuing
+  ordinary native frame writes. Pausing prevents natural completion from
+  disguising a missing cancellation.
+
+The [initial regression run](https://github.com/eahenle/dot-pet-dock/actions/runs/39100836237)
+reproduced the two defects while the original 29 tests and native-versus-docked
+frame comparison passed. The [first fix run](https://github.com/eahenle/dot-pet-dock/actions/runs/39100981522)
+passed all 32 then-present cases. Review added per-frame geometry sampling and
+a [confirmed failing storage regression](https://github.com/eahenle/dot-pet-dock/actions/runs/39101794702)
+before the persistence follow-up. Storage polling explicitly awaits and asserts
+resolved values rather than passing an async predicate to `wait_for_function`.
+
+The current suite contains 33 browser cases (32 unpacked-extension cases and one
+controlled storage-latency case). Final Ubuntu CI results for the complete
+v0.3.1 tree are available in [PR #4 checks](https://github.com/eahenle/dot-pet-dock/pull/4/checks).
+The workflow runs all four JavaScript syntax checks and
+`python tests/smoke_browser.py`; Python compilation and `git diff --check` also
+pass locally.
+
+These fixtures isolate extension behavior; they do not reproduce every native
+Dots transition or establish that the reported live jitter is gone. The current
+available pet was named Kira v2.1, so its sheet cannot be assumed to be the
+reported v2 asset. Static inspection found aligned idle-frame baselines but
+cannot establish runtime stability. No pet asset or account data was copied
+into this repository, and no pet was edited or activated.
+
+The connected browser was unavailable and the fallback browser was signed out,
+so an authenticated native-versus-docked comparison could not be completed.
+Local Chromium could not launch under the execution environment's socket
+restriction; the repository's GitHub Actions browser workflow provides the
+executable regression evidence. The October 16 production checks above are
+historical evidence for v0.3.0, not new live validation of this change.
+
+Remaining live check: use the same pet, page, and activity sequence with docking
+reset and then enabled at the saved size/position. Compare idle, directional
+looks, activity changes, and one-shot completion; repeat hidden-region resize
+and pet replacement while locked. Record whether movement occurs within the
+sprite, in the outer frame, or in both. Native-only jitter requires a native
+renderer or asset fix and is not resolved by these extension guards.
