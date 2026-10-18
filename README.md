@@ -4,7 +4,13 @@ Give your ChatGPT Dot pet more room: enlarge it **50–500%**, move it with an
 explicit handle, then lock it in place. A small, local-only Chrome Manifest V3
 extension with no build step, account, server, or API key.
 
-**v0.3.0 compatibility:** tested as an actual unpacked extension in Chromium
+**v0.3.1 stability polish:** defers positioning corrections while the pet has no
+layout box and cancels stale animation previews when its atlas changes in place.
+The native-versus-docked fixture comparison preserves frame order at 50%, 137%,
+250%, and 500%. These address reproduced extension defects; the original Kira
+jitter still needs a live comparison. See [investigation and validation](docs/validation.md#v031-stability-investigation).
+
+**v0.3.0 compatibility baseline:** tested as an actual unpacked extension in Chromium
 against SVG/canvas/CSS-sprite fixtures, and against a live production Dots pet
 in Chrome on October 16, 2026. The production adapter recognizes the pet avatar
 and its native button overlay; the nametag keeps its original display size.
@@ -49,7 +55,8 @@ animation once. The extension popup offers an icon for each of the nine clips,
 including while locked. Click an icon to play immediately; hover to see its name.
 Playback returns automatically to live activity after the clip. This previews
 the existing artwork without changing ChatGPT's working/status state. Playback
-stops when the tab is hidden, the selected renderer disappears, or you Reset.
+stops when the tab is hidden, the selected renderer disappears or changes its
+atlas, or you Reset.
 Unsupported sprite layouts keep animation controls disabled.
 
 Position, size, and lock settings are shared across conversations and saved in
@@ -80,14 +87,18 @@ Screenshot: a local test fixture, not the authenticated ChatGPT interface.
   guarded hierarchy paths. A unique semantic pet marker can recover a changed
   wrapper. Ambiguous or unsafe matches wait for manual selection.
 - Only child-list mutations are watched across the document; style observation
-  is limited to the selected node. Geometry tracking runs only while editing.
+  is limited to the selected node and, during a preview, its sprite. A hidden
+  layout box defers correction until it returns, including while locked.
+  Geometry tracking runs only while editing.
   A separate three-second runtime validity check performs best-effort cleanup
   after disabling/reloading the extension. **Reload ChatGPT after disabling or
   uninstalling** to guarantee removal of old content scripts.
 - Only `storage` and `activeTab` permissions are requested, and content scripts
   run on `https://chatgpt.com/*` only. No analytics, remote code, external API,
-  chat text extraction, screenshots, cookies, credentials, or artwork are read
-  or stored by the extension. Saved data contains target-identification
+  chat text extraction, screenshots, cookies, or credentials are read or stored.
+  The extension does not download or copy artwork pixels. During a preview it
+  holds the computed sprite source identifier in memory to detect replacement;
+  that identifier is never persisted. Saved data contains target-identification
   metadata, position, scale, and lock state. Browser test profiles are temporary
   and never use a personal browser profile.
 
@@ -137,7 +148,7 @@ available names for an unknown test name). `CHROME_EXECUTABLE` can select a
 compatible Chromium binary; use Playwright's bundled Chromium for reproducible
 unpacked-extension support.
 
-Twenty-eight tests load the **actual unpacked MV3 extension** in isolated temporary Chromium
+Thirty-two tests load the **actual unpacked MV3 extension** in isolated temporary Chromium
 profiles and fulfill all ChatGPT fixture requests locally. They exercise content
 script matching, real extension storage, popup messaging, selection and parent
 selection, drag/resize, native animation/styles, lock/reset, reload/remount/SPA,

@@ -1,4 +1,4 @@
-/* Dot Pet Dock v0.3.0: local-only visual display controls. */
+/* Dot Pet Dock v0.3.1: local-only visual display controls. */
 (() => {
   'use strict';
   if (window !== window.top || document.getElementById('dot-pet-dock-root')) return;
@@ -272,8 +272,14 @@
   }
 
   let natural = null;
+  let placementPending = false;
   const resizeObserver = new ResizeObserver(() => {
-    if (target && !gesture) queueFrame();
+    if (target && !gesture) {
+      // A hidden ancestor removes the layout box. Retry only the deferred
+      // placement when it returns, including when editing handles are locked.
+      if (placementPending) placeTarget();
+      queueFrame();
+    }
   });
   const targetObserver = new MutationObserver(() => {
     if (!target?.isConnected || !saved || !lease) return;
@@ -305,6 +311,7 @@
     target = null;
     lease = null;
     natural = null;
+    placementPending = false;
     frame.style.display = 'none';
   }
 
@@ -352,13 +359,23 @@
     // A top-layer element's containing block is the viewport. Account for its
     // native transform/origin and preexisting zoom without replacing animation.
     let rect = target.getBoundingClientRect();
-    const pos = bounds(rect);
-    saved.x = pos.x; saved.y = pos.y;
-    for (let i = 0; i < 2; i++) {
-      left += (saved.x - rect.left) / zoom;
-      top += (saved.y - rect.top) / zoom;
-      set('left', `${left}px`); set('top', `${top}px`);
-      rect = target.getBoundingClientRect();
+    const retryingPlacement = placementPending;
+    placementPending = !target.getClientRects().length;
+    // A missing box reports (0, 0, 0, 0), not a real viewport position.
+    // Correcting against that sentinel repeatedly adds the saved coordinates.
+    // Keep the requested settings until ResizeObserver sees a layout box again.
+    if (!placementPending) {
+      const pos = bounds(rect);
+      const clamped = pos.x !== saved.x || pos.y !== saved.y;
+      saved.x = pos.x; saved.y = pos.y;
+      for (let i = 0; i < 2; i++) {
+        left += (saved.x - rect.left) / zoom;
+        top += (saved.y - rect.top) / zoom;
+        set('left', `${left}px`); set('top', `${top}px`);
+        rect = target.getBoundingClientRect();
+      }
+      // The hidden resize or a later Lock may already have saved the old position.
+      if (retryingPlacement && clamped) saveConfig();
     }
     targetObserver.observe(target, { attributes: true, attributeFilter: ['style', 'popover'] });
     renderFrame();
