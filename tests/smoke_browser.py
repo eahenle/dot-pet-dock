@@ -503,6 +503,28 @@ def test_deferred_hidden_clamp_is_saved(playwright: Any) -> None:
         popup = h.context.new_page()
         try:
             popup.goto(f"chrome-extension://{unpacked_extension_id()}/popup.html")
+
+            def wait_for_saved(expected: dict[str, Any]) -> dict[str, Any]:
+                # wait_for_function treats a returned Promise as truthy; await
+                # storage polling explicitly and assert the resolved value.
+                value = popup.evaluate("""async expected => {
+                  const deadline = performance.now() + 1500;
+                  let value;
+                  do {
+                    value = (await chrome.storage.local.get('dot-pet-dock:v2'))['dot-pet-dock:v2'];
+                    if (Object.entries(expected).every(([key, wanted]) =>
+                      key === 'x' || key === 'y' ? Math.abs(value[key] - wanted) < 1 : value[key] === wanted)) return value;
+                    await new Promise(resolve => setTimeout(resolve, 50));
+                  } while (performance.now() < deadline);
+                  return value;
+                }""", expected)
+                for key, wanted in expected.items():
+                    if key in {"x", "y"}:
+                        assert_near(value[key], wanted, 1)
+                    else:
+                        assert value[key] == wanted, (key, value, expected)
+                return value
+
             page.bring_to_front()
             page.evaluate("""() => {
               window.fixtureResizeCount = 0;
@@ -519,11 +541,8 @@ def test_deferred_hidden_clamp_is_saved(playwright: Any) -> None:
               const [tab] = (await chrome.tabs.query({})).filter(t => t.id !== current.id);
               return chrome.tabs.sendMessage(tab.id, {namespace: 'DOT_PET_DOCK', action: 'LOCK', locked: true});
             }""")
-            popup.wait_for_function("async () => (await chrome.storage.local.get('dot-pet-dock:v2'))['dot-pet-dock:v2'].locked === true")
             assert pet.bounding_box() is None
-            hidden_value = popup.evaluate("async () => (await chrome.storage.local.get('dot-pet-dock:v2'))['dot-pet-dock:v2']")
-            assert_near(hidden_value["x"], before["x"], 1)
-            assert_near(hidden_value["y"], before["y"], 1)
+            wait_for_saved({"x": before["x"], "y": before["y"], "scale": 2.5, "locked": True})
             resize_count = page.evaluate("() => window.fixtureResizeCount")
             page.locator("#show-pet").evaluate("e => e.click()")
             page.wait_for_function("""() => {
@@ -533,11 +552,7 @@ def test_deferred_hidden_clamp_is_saved(playwright: Any) -> None:
             after = pet.bounding_box()
             assert after["x"] < before["x"] and after["y"] < before["y"], (before, after)
             assert after["width"] == before["width"] and after["height"] == before["height"]
-            popup.wait_for_function("""async box => {
-              const value = (await chrome.storage.local.get('dot-pet-dock:v2'))['dot-pet-dock:v2'];
-              return Math.abs(value.x - box.x) < 1 && Math.abs(value.y - box.y) < 1 &&
-                value.scale === 2.5 && value.locked === true;
-            }""", arg=after, timeout=1500)
+            wait_for_saved({"x": after["x"], "y": after["y"], "scale": 2.5, "locked": True})
             assert page.evaluate("() => window.fixtureResizeCount") == resize_count, "another resize must not mask a missing deferred save"
         finally:
             popup.close()
