@@ -433,27 +433,33 @@ def test_native_and_docked_sprite_frame_parity(playwright: Any) -> None:
         wait_for_target(page, 0)
         sprite = page.locator("#sprite-art")
 
-        def sample_frames() -> list[str]:
-            return sprite.evaluate("""e => {
+        def sample_frames() -> list[dict[str, Any]]:
+            return sprite.evaluate("""async e => {
               const animation = e.getAnimations().find(a => a.animationName === 'sprite-frames');
               animation.pause();
-              return [0, 199, 200, 399, 400].map(time => {
+              const samples = [];
+              for (const time of [0, 199, 200, 399, 400]) {
                 animation.currentTime = time;
-                return getComputedStyle(e).backgroundPosition;
-              });
+                await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+                const {x, y, width, height} = document.querySelector('#pet').getBoundingClientRect();
+                samples.push({position: getComputedStyle(e).backgroundPosition, box: {x, y, width, height}});
+              }
+              return samples;
             }""")
 
         native = sample_frames()
-        assert native == ['0% 0%', '0% 0%', '14.2857% 0%', '14.2857% 0%', '0% 0%'], native
+        native_positions = [sample["position"] for sample in native]
+        assert native_positions == ['0% 0%', '0% 0%', '14.2857% 0%', '14.2857% 0%', '0% 0%'], native
+        assert all(sample["box"] == native[0]["box"] for sample in native), native
         assert dock_message(h, "FIND")["selected"]
         for scale in [0.5, 1.37, 2.5, 5]:
             assert dock_message(h, "SET_SCALE", scale=scale)["ok"]
             for locked in [False, True]:
                 dock_message(h, "LOCK", locked=locked)
                 before = page.locator("#pet").bounding_box()
-                assert sample_frames() == native
-                after = page.locator("#pet").bounding_box()
-                assert before == after, (scale, locked, before, after)
+                samples = sample_frames()
+                assert [sample["position"] for sample in samples] == native_positions
+                assert all(sample["box"] == before for sample in samples), (scale, locked, before, samples)
         assert not h.errors, h.errors
 
 
@@ -485,28 +491,66 @@ def test_hidden_resize_preserves_native_and_docked_position(playwright: Any) -> 
         assert not h.errors, h.errors
 
 
+def test_deferred_hidden_clamp_is_saved(playwright: Any) -> None:
+    """A correction after the hidden resize's save has completed must persist."""
+    with harness(playwright, "hidden") as h:
+        page = h.open()
+        pet = select_at(page, "#pet-art")
+        dock_message(h, "SET_SCALE", scale=2.5)
+        dock_message(h, "LOCK", locked=True)
+        before = pet.bounding_box()
+        page.locator("#hide-pet").click()
+        page.set_viewport_size({"width": 500, "height": 260})
+        # Cross the 100 ms storage debounce before revealing the layout box.
+        page.wait_for_timeout(250)
+        page.locator("#show-pet").evaluate("e => e.click()")
+        page.wait_for_function("""() => {
+          const box = document.querySelector('#pet').getBoundingClientRect();
+          return box.width > 0 && box.right <= innerWidth - 7;
+        }""")
+        after = pet.bounding_box()
+        assert after["x"] < before["x"] and after["y"] < before["y"], (before, after)
+        assert after["width"] == before["width"] and after["height"] == before["height"]
+        popup = h.context.new_page()
+        try:
+            popup.goto(f"chrome-extension://{unpacked_extension_id()}/popup.html")
+            popup.wait_for_function("""async box => {
+              const value = (await chrome.storage.local.get('dot-pet-dock:v2'))['dot-pet-dock:v2'];
+              return Math.abs(value.x - box.x) < 1 && Math.abs(value.y - box.y) < 1 &&
+                value.scale === 2.5 && value.locked === true;
+            }""", arg=after, timeout=1500)
+        finally:
+            popup.close()
+        assert not h.errors, h.errors
+
+
 def test_preview_stops_when_sprite_atlas_changes_in_place(playwright: Any) -> None:
     """Reusing a sprite DOM node must not apply the old preview to a new atlas."""
     with harness(playwright, "sprite") as h:
         page = h.open()
         wait_for_target(page)
         dock_message(h, "LOCK", locked=True)
-        dock_message(h, "ANIMATE", clip="failed")
         sprite = page.locator("#sprite-art")
-        # Hold the preview so a natural timeout cannot make this test pass.
-        sprite.evaluate("""e => {
-          const preview = e.getAnimations().find(a => a.id === 'dot-pet-dock-clip');
-          preview.pause(); preview.currentTime = 300;
-          e.style.animation = 'none';
-          e.style.backgroundSize = '800% 900%';
-          e.style.backgroundPosition = '100% 87.5%';
-        }""")
-        page.wait_for_function("""() => {
-          const e = document.querySelector('#sprite-art');
-          return !e.getAnimations().some(a => a.id === 'dot-pet-dock-clip') &&
-            getComputedStyle(e).backgroundPosition === '100% 87.5%';
-        }""", timeout=1500)
-        assert dock_message(h, "STATE")["playing"] is None
+        replacement = "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='448' height='504'%3E%3Crect width='448' height='504' fill='purple'/%3E%3C/svg%3E\")"
+        # Changing only the source also invalidates playback, even on the same grid.
+        for change in [{"backgroundSize": "800% 900%"}, {"backgroundImage": replacement}]:
+            dock_message(h, "ANIMATE", clip="failed")
+            # Hold the preview so a natural timeout cannot make this test pass.
+            sprite.evaluate("""e => {
+              const preview = e.getAnimations().find(a => a.id === 'dot-pet-dock-clip');
+              preview.pause(); preview.currentTime = 300;
+              e.style.animation = 'none';
+              e.style.backgroundPosition = '100% 87.5%';
+            }""")
+            page.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
+            assert sprite.evaluate("e => e.getAnimations().some(a => a.id === 'dot-pet-dock-clip')"), "native frame writes must not cancel the preview"
+            sprite.evaluate("(e, change) => Object.assign(e.style, change)", change)
+            page.wait_for_function("""() => {
+              const e = document.querySelector('#sprite-art');
+              return !e.getAnimations().some(a => a.id === 'dot-pet-dock-clip') &&
+                getComputedStyle(e).backgroundPosition === '100% 87.5%';
+            }""", timeout=1500)
+            assert dock_message(h, "STATE")["playing"] is None
         assert not h.errors, h.errors
 
 
@@ -1374,6 +1418,7 @@ def test_popup_scale_survives_close_with_delayed_replies(playwright: Any) -> Non
 TESTS: dict[str, Callable[[Any], None]] = {
     "sprite-parity": test_native_and_docked_sprite_frame_parity,
     "hidden-resize": test_hidden_resize_preserves_native_and_docked_position,
+    "hidden-clamp-storage": test_deferred_hidden_clamp_is_saved,
     "animation-atlas-change": test_preview_stops_when_sprite_atlas_changes_in_place,
     "auto": test_auto_detect_and_svg_parent,
     "animation-wave": test_native_animation_wave_returns_to_live_state,
