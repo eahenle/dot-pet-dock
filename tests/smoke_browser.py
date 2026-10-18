@@ -499,21 +499,33 @@ def test_deferred_hidden_clamp_is_saved(playwright: Any) -> None:
         dock_message(h, "SET_SCALE", scale=2.5)
         dock_message(h, "LOCK", locked=True)
         before = pet.bounding_box()
-        page.locator("#hide-pet").click()
-        page.set_viewport_size({"width": 500, "height": 260})
-        # Cross the 100 ms storage debounce before revealing the layout box.
-        page.wait_for_timeout(250)
-        page.locator("#show-pet").evaluate("e => e.click()")
-        page.wait_for_function("""() => {
-          const box = document.querySelector('#pet').getBoundingClientRect();
-          return box.width > 0 && box.right <= innerWidth - 7;
-        }""")
-        after = pet.bounding_box()
-        assert after["x"] < before["x"] and after["y"] < before["y"], (before, after)
-        assert after["width"] == before["width"] and after["height"] == before["height"]
+        # Keep the storage reader open: opening another tab after correction can
+        # resize the Chrome window and incidentally persist the new position.
         popup = h.context.new_page()
         try:
             popup.goto(f"chrome-extension://{unpacked_extension_id()}/popup.html")
+            page.bring_to_front()
+            page.evaluate("""() => {
+              window.fixtureResizeCount = 0;
+              window.addEventListener('resize', () => window.fixtureResizeCount++);
+            }""")
+            page.locator("#hide-pet").click()
+            page.set_viewport_size({"width": 500, "height": 260})
+            page.wait_for_function("() => window.fixtureResizeCount > 0")
+            # Cross the 100 ms storage debounce before revealing the layout box.
+            page.wait_for_timeout(250)
+            assert pet.bounding_box() is None
+            hidden_value = popup.evaluate("async () => (await chrome.storage.local.get('dot-pet-dock:v2'))['dot-pet-dock:v2']")
+            assert_near(hidden_value["x"], before["x"], 1)
+            assert_near(hidden_value["y"], before["y"], 1)
+            page.locator("#show-pet").evaluate("e => e.click()")
+            page.wait_for_function("""() => {
+              const box = document.querySelector('#pet').getBoundingClientRect();
+              return box.width > 0 && box.right <= innerWidth - 7;
+            }""")
+            after = pet.bounding_box()
+            assert after["x"] < before["x"] and after["y"] < before["y"], (before, after)
+            assert after["width"] == before["width"] and after["height"] == before["height"]
             popup.wait_for_function("""async box => {
               const value = (await chrome.storage.local.get('dot-pet-dock:v2'))['dot-pet-dock:v2'];
               return Math.abs(value.x - box.x) < 1 && Math.abs(value.y - box.y) < 1 &&
