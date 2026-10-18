@@ -14,6 +14,9 @@
     review: { label: 'Review', row: 8, durations: [150, 150, 150, 150, 150, 280] }
   };
   let active = null;
+  const spriteObserver = new MutationObserver(() => {
+    if (active) reconcile(active.target);
+  });
 
   function renderer(target) {
     if (!target?.isConnected || !globalThis.DotPetDockTargeting?.dotsAvatar(target)) return null;
@@ -24,7 +27,7 @@
       const grid = /^800% (900|1100)%$/.exec(style.backgroundSize);
       if (!grid || ['background-position', 'background-position-x', 'background-position-y']
         .some(property => sprite.style.getPropertyPriority(property) === 'important')) return null;
-      return { sprite, rows: Number(grid[1]) / 100 };
+      return { sprite, rows: Number(grid[1]) / 100, image: style.backgroundImage };
     }
     return null;
   }
@@ -32,11 +35,14 @@
   function stop() {
     const previous = active;
     active = null;
+    spriteObserver.disconnect();
     previous?.animation.cancel();
   }
 
   function reconcile(target) {
-    if (active && (!active.sprite.isConnected || !target?.contains(active.sprite))) stop();
+    if (!active) return;
+    const found = renderer(target);
+    if (!found || found.sprite !== active.sprite || found.rows !== active.rows || found.image !== active.image) stop();
   }
 
   function play(target, name) {
@@ -58,10 +64,14 @@
     // site's inline styles. Cancel/finish reveals its latest native state.
     const animation = found.sprite.animate(frames, { duration, iterations: 1, fill: 'none' });
     animation.id = 'dot-pet-dock-clip';
-    const run = { sprite: found.sprite, animation, name };
+    // The atlas identity lives only for this preview; never persist asset URLs.
+    const run = { ...found, target, animation, name };
     active = run;
+    // Native frame-position writes are allowed to continue. Only an atlas or
+    // compatibility change cancels the preview, even with the dock locked.
+    spriteObserver.observe(found.sprite, { attributes: true, attributeFilter: ['style', 'class'] });
     animation.onfinish = () => { if (active === run) stop(); };
-    animation.oncancel = () => { if (active === run) active = null; };
+    animation.oncancel = () => { if (active === run) stop(); };
   }
 
   function state(target) {
