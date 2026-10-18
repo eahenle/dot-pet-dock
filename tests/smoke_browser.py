@@ -492,12 +492,11 @@ def test_hidden_resize_preserves_native_and_docked_position(playwright: Any) -> 
 
 
 def test_deferred_hidden_clamp_is_saved(playwright: Any) -> None:
-    """A correction after the hidden resize's save has completed must persist."""
+    """A correction after the user saves settings while hidden must persist."""
     with harness(playwright, "hidden") as h:
         page = h.open()
         pet = select_at(page, "#pet-art")
         dock_message(h, "SET_SCALE", scale=2.5)
-        dock_message(h, "LOCK", locked=True)
         before = pet.bounding_box()
         # Keep the storage reader open: opening another tab after correction can
         # resize the Chrome window and incidentally persist the new position.
@@ -512,12 +511,20 @@ def test_deferred_hidden_clamp_is_saved(playwright: Any) -> None:
             page.locator("#hide-pet").click()
             page.set_viewport_size({"width": 500, "height": 260})
             page.wait_for_function("() => window.fixtureResizeCount > 0")
-            # Cross the 100 ms storage debounce before revealing the layout box.
-            page.wait_for_timeout(250)
+            # Lock via the real popup transport while hidden. This flushes the
+            # current settings, so a delayed debounce cannot mask a missing save
+            # after the layout box returns.
+            popup.evaluate("""async () => {
+              const current = await chrome.tabs.getCurrent();
+              const [tab] = (await chrome.tabs.query({})).filter(t => t.id !== current.id);
+              return chrome.tabs.sendMessage(tab.id, {namespace: 'DOT_PET_DOCK', action: 'LOCK', locked: true});
+            }""")
+            popup.wait_for_function("async () => (await chrome.storage.local.get('dot-pet-dock:v2'))['dot-pet-dock:v2'].locked === true")
             assert pet.bounding_box() is None
             hidden_value = popup.evaluate("async () => (await chrome.storage.local.get('dot-pet-dock:v2'))['dot-pet-dock:v2']")
             assert_near(hidden_value["x"], before["x"], 1)
             assert_near(hidden_value["y"], before["y"], 1)
+            resize_count = page.evaluate("() => window.fixtureResizeCount")
             page.locator("#show-pet").evaluate("e => e.click()")
             page.wait_for_function("""() => {
               const box = document.querySelector('#pet').getBoundingClientRect();
@@ -531,6 +538,7 @@ def test_deferred_hidden_clamp_is_saved(playwright: Any) -> None:
               return Math.abs(value.x - box.x) < 1 && Math.abs(value.y - box.y) < 1 &&
                 value.scale === 2.5 && value.locked === true;
             }""", arg=after, timeout=1500)
+            assert page.evaluate("() => window.fixtureResizeCount") == resize_count, "another resize must not mask a missing deferred save"
         finally:
             popup.close()
         assert not h.errors, h.errors
